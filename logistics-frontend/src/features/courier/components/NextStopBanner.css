@@ -1,0 +1,30 @@
+.next-stop-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 20px;
+  background: rgba(15, 23, 42, 0.95);
+  border-left: 4px solid #10b981;
+  flex-shrink: 0;
+}
+
+.next-stop-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #10b981;
+  text-transform: uppercase;
+}
+
+.next-stop-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: #f1f5f9;
+  line-height: 1.2;
+}
+
+.next-stop-progress {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}

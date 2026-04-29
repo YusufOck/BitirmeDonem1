@@ -1,0 +1,14 @@
+.courier-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.5rem;
+}
+
+.no-couriers {
+  color: var(--text-secondary);
+  padding: 3rem;
+  font-style: italic;
+  background: var(--surface-color);
+  border-radius: 12px;
+  border: 1px dashed var(--border-color);
+}

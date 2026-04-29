@@ -1,0 +1,76 @@
+.courier-map-container {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.stop-marker {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #1e293b;
+  border: 2px solid #3b82f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stop-marker-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: #93c5fd;
+  line-height: 1;
+}
+
+.live-marker {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.live-marker-pulse {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.3);
+  animation: pulse 1.6s ease-out infinite;
+}
+
+.live-marker-dot {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid #fff;
+  z-index: 1;
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.5); opacity: 1; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+.recenter-btn {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(30, 41, 59, 0.9);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  z-index: 10;
+}
+
+.recenter-btn:active {
+  background: rgba(59, 130, 246, 0.2);
+}

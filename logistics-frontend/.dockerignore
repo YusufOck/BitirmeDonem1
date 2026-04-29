@@ -1,0 +1,5 @@
+node_modules
+dist
+.env.local
+.ipynb_checkpoints
+npm-debug.log*

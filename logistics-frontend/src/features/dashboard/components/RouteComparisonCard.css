@@ -1,0 +1,64 @@
+.route-card-container {
+  /* Positioning it over the map */
+  position: absolute;
+  bottom: 24px;
+  left: 24px;
+  z-index: 10;
+  /* Ensures it sits on top of the mapbox canvas */
+
+  /* Transparency & Glass Effect */
+  background-color: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(8px);
+  /* Optional: Gives a nice frosted glass effect */
+  -webkit-backdrop-filter: blur(8px);
+  /* Safari support */
+
+  padding: 16px;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  width: 240px;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.route-card-explanation {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  color: #334155;
+  line-height: 1.5;
+  font-weight: 500;
+}
+
+.route-card-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.route-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.route-card-label {
+  font-size: 13px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.route-card-value-positive {
+  font-size: 14px;
+  font-weight: 600;
+  color: #16a34a;
+  /* Green */
+}
+
+.route-card-value-negative {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ef4444;
+  /* Red */
+}
