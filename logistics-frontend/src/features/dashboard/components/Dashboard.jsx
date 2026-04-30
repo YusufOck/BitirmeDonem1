@@ -24,8 +24,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
-    return () => stopSimulation();
-  }, [fetchData, stopSimulation]);
+  }, [fetchData]);
 
   const activeCouriersList = Object.values(liveCouriers);
   const selectedCourier = couriers.find((courier) => courier.id === selectedCourierId) || couriers[0];
@@ -41,6 +40,30 @@ export default function Dashboard() {
     : 0;
   const routeStatus = routeSummary?.vrp_status === 'success' ? 'Optimized' : 'Needs Review';
   const showDelayAlert = delayedStops > 0;
+  const selectedStops = selectedRoute?.stops || [];
+  const topDelayStops = selectedStops
+    .filter((stop) => Number(stop.expected_delay_min || 0) > 0)
+    .sort((a, b) => Number(b.expected_delay_min || 0) - Number(a.expected_delay_min || 0))
+    .slice(0, 3);
+  const buildDelayFactors = (stop) => {
+    const factors = [];
+    if (Number.isFinite(Number(stop.delay_probability))) {
+      factors.push(`${Math.round(Number(stop.delay_probability) * 100)}% delay probability`);
+    }
+    if (Number(stop.planned_travel_min || 0) > 0) {
+      factors.push(`${formatNumber(stop.planned_travel_min)} min incoming drive`);
+    }
+    if (Number(stop.time_window_slack_min || 0) <= 90) {
+      factors.push(`${formatNumber(stop.time_window_slack_min)} min time-window slack`);
+    }
+    if (stop.risk_level && stop.risk_level !== 'low') {
+      factors.push(`${stop.risk_level} risk level`);
+    }
+    if (stop.will_miss_window) {
+      factors.push('time window at risk');
+    }
+    return factors.slice(0, 3);
+  };
 
   return (
     <div className="dashboard-container">
@@ -155,6 +178,45 @@ export default function Dashboard() {
                 </strong>
                 <small>{selectedComparison.durationSaved ? 'saved' : 'trade-off'}</small>
               </div>
+            </div>
+          </section>
+        )}
+
+        {!loading && routeSummary && (
+          <section className="decision-explainers">
+            <div className="decision-panel glass-panel">
+              <span className="proof-eyebrow">Optimization method</span>
+              <h2>What is being optimized?</h2>
+              <p>
+                The original route is the database stop order. The optimized route is selected by OR-Tools using
+                Mapbox road travel times and ML delay scores. The ML model predicts delay risk; OR-Tools chooses the stop order.
+              </p>
+              <ul>
+                <li>Road distance and duration from Mapbox, not straight-line distance.</li>
+                <li>Per-stop expected delay and risk from the trained ML model.</li>
+                <li>Stop order, previous-leg travel time, time-window slack, and cascading delay pressure.</li>
+              </ul>
+            </div>
+
+            <div className="decision-panel glass-panel">
+              <span className="proof-eyebrow">Expected delay drivers</span>
+              <h2>Why does delay appear?</h2>
+              {topDelayStops.length > 0 ? (
+                <div className="delay-driver-list">
+                  {topDelayStops.map((stop) => (
+                    <div key={stop.stop_id || stop.stop_name} className="delay-driver-row">
+                      <strong>{stop.stop_name || 'Unnamed stop'}</strong>
+                      <span>{formatNumber(stop.expected_delay_min)} min expected delay</span>
+                      <small>{buildDelayFactors(stop).join(' | ')}</small>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p>No delayed stops are predicted for the selected courier.</p>
+              )}
+              <p className="data-note">
+                Live accident and weather feeds are not connected yet, so the UI does not claim a specific crash or storm.
+              </p>
             </div>
           </section>
         )}
