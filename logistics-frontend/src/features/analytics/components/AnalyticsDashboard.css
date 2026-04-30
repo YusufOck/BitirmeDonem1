@@ -9,10 +9,26 @@
   margin-bottom: 2rem;
 }
 
+.analytics-eyebrow {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .analytics-page-header h1 {
-  font-size: 1.75rem;
-  font-weight: 600;
+  font-size: 2rem;
+  font-weight: 700;
   color: var(--text-primary);
+}
+
+.analytics-page-header p {
+  margin-top: 0.55rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 
 .analytics-main {
@@ -21,6 +37,14 @@
   flex-direction: column;
   gap: 2rem;
   max-width: 1400px;
+}
+
+.analytics-error {
+  padding: 0.8rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--danger);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
 }
 
 .kpi-grid {
@@ -35,6 +59,7 @@
   flex-direction: column;
   gap: 0.5rem;
   border-top: 2px solid var(--primary-accent);
+  border-radius: 8px;
 }
 
 .kpi-card.danger-border {
@@ -95,6 +120,7 @@
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
+  border-radius: 8px;
 }
 
 .delays-section h2 {
@@ -135,3 +161,21 @@
 .text-danger { color: var(--danger); font-weight: 600; }
 .text-warning { color: var(--warning); font-weight: 600; }
 .font-mono { font-family: 'ui-monospace', monospace; }
+
+.analytics-empty {
+  text-align: center;
+  color: var(--text-tertiary) !important;
+  padding: 2rem !important;
+}
+
+@media (max-width: 760px) {
+  .analytics-page-header,
+  .analytics-main {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .charts-grid {
+    grid-template-columns: 1fr;
+  }
+}

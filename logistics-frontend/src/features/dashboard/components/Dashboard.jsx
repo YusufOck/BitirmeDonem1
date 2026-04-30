@@ -1,18 +1,25 @@
 import React, { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './Dashboard.css';
 import MapViewer from './MapViewer';
 import CourierList from './CourierList';
 import PackageList from './PackageList';
 import { useRouteStore } from '../../../store/useRouteStore';
 
+const formatNumber = (value, digits = 1) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num.toFixed(digits).replace(/\.0$/, '') : '0';
+};
+
 export default function Dashboard() {
+  const navigate = useNavigate();
   const {
-    loading, error, fetchData,
+    loading, error, fetchData, forceFetchData,
     routes, couriers, packages,
-    routeSummary, explanation,
+    routeSummary,
     selectedCourierId, setSelectedCourier, hasFetched,
     startSimulation, stopSimulation, wsConnected,
-    liveCouriers, isConnecting, pendingSuggestions, handleSuggestionDecision
+    liveCouriers, isConnecting, pendingSuggestions, handleSuggestionDecision,
   } = useRouteStore();
 
   useEffect(() => {
@@ -21,11 +28,58 @@ export default function Dashboard() {
   }, [fetchData, stopSimulation]);
 
   const activeCouriersList = Object.values(liveCouriers);
+  const selectedCourier = couriers.find((courier) => courier.id === selectedCourierId) || couriers[0];
+  const selectedRoute = routes.find((route) => route.vehicle_id === selectedCourier?.id) || routes[0];
+  const selectedComparison = selectedRoute?.comparison;
+  const totalStops = packages.length;
+  const delayedStops = packages.filter((pkg) => Number(pkg.expected_delay_min || 0) > 0).length;
+  const completedStops = packages.filter((pkg) => pkg.status === 'completed').length;
+  const onTimeStops = Math.max(totalStops - delayedStops, 0);
+  const deliveryProgress = totalStops > 0 ? Math.round((completedStops / totalStops) * 100) : 0;
+  const healthScore = routeSummary
+    ? Math.max(0, 10 - Number(routeSummary.overall_risk_score || 0) * 10)
+    : 0;
+  const routeStatus = routeSummary?.vrp_status === 'success' ? 'Optimized' : 'Needs Review';
+  const showDelayAlert = delayedStops > 0;
 
   return (
     <div className="dashboard-container">
       <header className="dashboard-page-header">
-        <h1>Live Dispatch Map</h1>
+        <div>
+          <span className="dashboard-eyebrow">SBTU Logistics Control Room</span>
+          <h1>Dispatch Center</h1>
+          <p className="dashboard-subtitle">
+            Real courier assignments, optimized routes, and delay risk from the live backend.
+          </p>
+        </div>
+
+        <div className="dashboard-header-actions">
+          <div className={`live-pill ${wsConnected ? 'live-pill--on' : isConnecting ? 'live-pill--pending' : 'live-pill--off'}`}>
+            <span className="live-dot" />
+            {wsConnected ? 'Live simulation' : isConnecting ? 'Connecting' : 'Simulation off'}
+          </div>
+          <button
+            className="control-btn control-btn--success"
+            onClick={startSimulation}
+            disabled={!hasFetched || wsConnected || isConnecting}
+          >
+            {isConnecting ? 'Starting' : 'Start'}
+          </button>
+          <button
+            className="control-btn control-btn--danger"
+            onClick={stopSimulation}
+            disabled={!wsConnected && !isConnecting}
+          >
+            Stop
+          </button>
+          <button
+            className="control-btn control-btn--neutral"
+            onClick={forceFetchData}
+            disabled={loading}
+          >
+            Refresh
+          </button>
+        </div>
 
         {loading && (
           <div className="loading-bar-wrapper">
@@ -35,118 +89,170 @@ export default function Dashboard() {
 
         {error && (
           <div className="dashboard-error-banner">
-            ⚠ {error}
-            <button onClick={() => window.location.reload()}>Retry</button>
+            <span>{error}</span>
+            <button onClick={forceFetchData}>Retry</button>
           </div>
         )}
-
-        <div className="simulation-controls" style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <span style={{ fontWeight: 'bold', color: wsConnected ? '#10b981' : (isConnecting ? '#f59e0b' : '#ef4444') }}>
-            {wsConnected ? '🟢 Live' : (isConnecting ? '🟡 Connecting...' : '🔴 Offline')}
-          </span>
-          <button
-            onClick={startSimulation}
-            disabled={!hasFetched || wsConnected || isConnecting}
-            style={{
-              padding: '8px 16px',
-              background: '#10b981',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: (wsConnected || isConnecting) ? 'not-allowed' : 'pointer',
-              opacity: (wsConnected || isConnecting) ? 0.6 : 1
-            }}
-          >
-            {isConnecting ? 'Starting...' : '▶ Start Sim'}
-          </button>
-
-          <button
-            onClick={stopSimulation}
-            disabled={!wsConnected && !isConnecting}
-            style={{
-              padding: '8px 16px',
-              background: '#ef4444',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: (!wsConnected && !isConnecting) ? 'not-allowed' : 'pointer',
-              opacity: (!wsConnected && !isConnecting) ? 0.6 : 1
-            }}
-          >
-            ■ Stop Sim
-          </button>
-        </div>
       </header>
 
       <main className="dashboard-main">
+        {!loading && routeSummary && (
+          <section className={`ops-alert ${showDelayAlert ? 'ops-alert--warning' : 'ops-alert--ok'}`}>
+            <div>
+              <strong>
+                {showDelayAlert
+                  ? `${delayedStops} stops need delay watch`
+                  : 'All planned stops are on track'}
+              </strong>
+              <span>
+                {showDelayAlert
+                  ? `${formatNumber(routeSummary.expected_total_delay_min)} total expected delay minutes across ${couriers.length} couriers.`
+                  : `${totalStops} stops are planned with no active delay warning.`}
+              </span>
+            </div>
+            {selectedCourier && (
+              <button onClick={() => navigate(`/courier/${selectedCourier.id}`)}>
+                Open courier view
+              </button>
+            )}
+          </section>
+        )}
+
+        {!loading && selectedComparison && (
+          <section className="optimization-proof glass-panel">
+            <div className="proof-copy">
+              <span className="proof-eyebrow">Optimization proof</span>
+              <h2>Original plan vs optimized route</h2>
+              <p>
+                The gray dashed route shows the original stop order from the database.
+                The colored route shows the OR-Tools optimized order after ML delay scoring.
+              </p>
+            </div>
+            <div className="proof-metrics">
+              <div>
+                <span>Original</span>
+                <strong>{formatNumber(selectedComparison.originalDistanceKm)} km</strong>
+                <small>{selectedComparison.originalDurationMin} min</small>
+              </div>
+              <div>
+                <span>Optimized</span>
+                <strong>{formatNumber(selectedComparison.optimizedDistanceKm)} km</strong>
+                <small>{selectedComparison.optimizedDurationMin} min</small>
+              </div>
+              <div className={selectedComparison.distanceSaved ? 'proof-positive' : 'proof-neutral'}>
+                <span>Distance impact</span>
+                <strong>
+                  {selectedComparison.distanceSaved ? '-' : '+'}
+                  {formatNumber(Math.abs(selectedComparison.distanceDeltaKm))} km
+                </strong>
+                <small>{selectedComparison.distanceSaved ? 'saved' : 'trade-off'}</small>
+              </div>
+              <div className={selectedComparison.durationSaved ? 'proof-positive' : 'proof-neutral'}>
+                <span>Time impact</span>
+                <strong>
+                  {selectedComparison.durationSaved ? '-' : '+'}
+                  {Math.abs(selectedComparison.durationDeltaMin)} min
+                </strong>
+                <small>{selectedComparison.durationSaved ? 'saved' : 'trade-off'}</small>
+              </div>
+            </div>
+          </section>
+        )}
+
         <section className="dashboard-kpis">
           {loading
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="small-kpi-card skeleton-card">
-                  <span className="skeleton-line skeleton-label" />
-                  <span className="skeleton-line skeleton-value" />
-                </div>
-              ))
+            ? Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="small-kpi-card skeleton-card">
+                <span className="skeleton-line skeleton-label" />
+                <span className="skeleton-line skeleton-value" />
+              </div>
+            ))
             : routeSummary && (
-                <>
-                  <div className="small-kpi-card">
-                    <span className="label">Overall Risk Score</span>
-                    <span className="value">{routeSummary.overall_risk_score}</span>
-                  </div>
-                  <div className="small-kpi-card">
-                    <span className="label">Total Expected Delay</span>
-                    <span className="value">{routeSummary.expected_total_delay_min} min</span>
-                  </div>
-                  <div className="small-kpi-card">
-                    <span className="label">Severe Stops</span>
-                    <span className="value text-danger">{routeSummary.severe_stop_count}</span>
-                  </div>
-                  <div className="small-kpi-card">
-                    <span className="label">VRP Status</span>
-                    <span className="value">{routeSummary.vrp_status}</span>
-                  </div>
-                </>
-              )
-          }
+              <>
+                <div className="small-kpi-card small-kpi-card--good">
+                  <span className="label">Route Health</span>
+                  <span className="value">{formatNumber(healthScore)}/10</span>
+                  <span className="kpi-note">Lower risk is better</span>
+                </div>
+                <div className="small-kpi-card small-kpi-card--warning">
+                  <span className="label">Expected Delay</span>
+                  <span className="value">{formatNumber(routeSummary.expected_total_delay_min)} min</span>
+                  <span className="kpi-note">ML delay prediction</span>
+                </div>
+                <div className="small-kpi-card">
+                  <span className="label">Delayed Stops</span>
+                  <span className="value">{delayedStops}</span>
+                  <span className="kpi-note">{onTimeStops} currently on time</span>
+                </div>
+                <div className="small-kpi-card">
+                  <span className="label">Delivery Progress</span>
+                  <span className="value">{completedStops}/{totalStops}</span>
+                  <span className="kpi-note">{deliveryProgress}% completed</span>
+                </div>
+                <div className="small-kpi-card small-kpi-card--good">
+                  <span className="label">Route Status</span>
+                  <span className="value">{routeStatus}</span>
+                  <span className="kpi-note">OR-Tools result</span>
+                </div>
+              </>
+            )}
         </section>
 
         <div className="map-and-fleet-container">
           <section className="dashboard-map-section">
             {loading
               ? <div className="skeleton-map"><div className="skeleton-map-pulse" /></div>
-              : <MapViewer routes={routes} selectedCourierId={selectedCourierId} liveCouriers={activeCouriersList} pendingSuggestions={pendingSuggestions} handleSuggestionDecision={handleSuggestionDecision} />
-            }
+              : (
+                <MapViewer
+                  routes={routes}
+                  selectedCourierId={selectedCourierId}
+                  liveCouriers={activeCouriersList}
+                  pendingSuggestions={pendingSuggestions}
+                  handleSuggestionDecision={handleSuggestionDecision}
+                />
+              )}
           </section>
 
           <section className="dashboard-couriers-section">
-            <h2 className="section-title">Active Fleet</h2>
+            <div className="section-heading">
+              <h2 className="section-title">Active Fleet</h2>
+              <span>{couriers.length} couriers</span>
+            </div>
             <div className="fleet-scroll-area">
               {loading
                 ? Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="skeleton-courier-card">
-                      <div className="skeleton-avatar" />
-                      <div className="skeleton-courier-lines">
-                        <span className="skeleton-line" style={{ width: '60%' }} />
-                        <span className="skeleton-line" style={{ width: '40%' }} />
-                      </div>
+                  <div key={i} className="skeleton-courier-card">
+                    <div className="skeleton-avatar" />
+                    <div className="skeleton-courier-lines">
+                      <span className="skeleton-line" style={{ width: '60%' }} />
+                      <span className="skeleton-line" style={{ width: '40%' }} />
                     </div>
-                  ))
-                : <CourierList couriers={couriers} selectedCourierId={selectedCourierId} onSelectCourier={setSelectedCourier} pendingSuggestions={pendingSuggestions} />
-              }
+                  </div>
+                ))
+                : (
+                  <CourierList
+                    couriers={couriers}
+                    selectedCourierId={selectedCourierId}
+                    onSelectCourier={setSelectedCourier}
+                    pendingSuggestions={pendingSuggestions}
+                  />
+                )}
             </div>
           </section>
         </div>
 
         <section className="dashboard-packages-section">
-          <h2 className="section-title">Global Manifest</h2>
+          <div className="section-heading">
+            <h2 className="section-title">Stop Manifest</h2>
+            <span>{totalStops} planned stops</span>
+          </div>
           {loading
             ? Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="skeleton-package-row">
-                  <span className="skeleton-line" style={{ width: `${50 + i * 8}%` }} />
-                </div>
-              ))
-            : <PackageList packages={packages} />
-          }
+              <div key={i} className="skeleton-package-row">
+                <span className="skeleton-line" style={{ width: `${50 + i * 8}%` }} />
+              </div>
+            ))
+            : <PackageList packages={packages} />}
         </section>
       </main>
     </div>

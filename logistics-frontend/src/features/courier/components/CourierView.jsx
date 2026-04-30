@@ -14,25 +14,22 @@ export default function CourierView() {
   const courierId = parseInt(id, 10);
   const navigate = useNavigate();
 
-  const fetchData = useRouteStore(s => s.fetchData);
-  const loading = useRouteStore(s => s.loading);
-  const error = useRouteStore(s => s.error);
-  const hasFetched = useRouteStore(s => s.hasFetched);
-  const couriers = useRouteStore(s => s.couriers);
-  const routes = useRouteStore(s => s.routes);
+  const fetchData = useRouteStore((state) => state.fetchData);
+  const loading = useRouteStore((state) => state.loading);
+  const error = useRouteStore((state) => state.error);
+  const hasFetched = useRouteStore((state) => state.hasFetched);
+  const couriers = useRouteStore((state) => state.couriers);
+  const routes = useRouteStore((state) => state.routes);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  const courierData = couriers.find(c => c.id === courierId);
-
-  // Get this courier's pre-computed backend route geometry (same source as dispatcher map)
-  const backendRoute = routes.find(r => r.vehicle_id === courierId);
+  const courierData = couriers.find((courier) => courier.id === courierId);
+  const backendRoute = routes.find((route) => route.vehicle_id === courierId);
   const backendGeometry = backendRoute?.geometry ?? null;
   const routeColor = backendRoute?.color ?? '#3b82f6';
 
-  // Mapbox Directions API: used for turn-by-turn navigation steps
   const { steps, routeGeometry: mapboxGeometry, loading: directionsLoading } = useDirections(courierData?.stops);
   const { livePosition, wsConnected } = useCourierWebSocket(courierId);
 
@@ -50,13 +47,11 @@ export default function CourierView() {
 
   const stops = courierData?.stops ?? [];
   const totalStops = stops.length;
-
   const completedStops = steps
     .slice(0, currentStepIndex + 1)
-    .filter(s => s.maneuver?.type === 'arrive').length;
+    .filter((step) => step.maneuver?.type === 'arrive').length;
   const currentStopDisplayIndex = Math.min(completedStops + 1, totalStops);
   const nextStop = stops[completedStops] ?? null;
-
   const storeLoading = loading && !hasFetched;
 
   if (storeLoading) {
@@ -71,7 +66,7 @@ export default function CourierView() {
   if (hasFetched && !courierData) {
     return (
       <div className="courier-view courier-view--error">
-        <span className="courier-error-icon">⚠</span>
+        <span className="courier-error-icon">!</span>
         <p className="courier-error-title">Courier not found</p>
         <p className="courier-error-sub">No route assigned to Courier ID {courierId}.</p>
         <button className="courier-back-btn" onClick={() => navigate('/')}>Back to Dispatcher</button>
@@ -82,7 +77,7 @@ export default function CourierView() {
   if (error) {
     return (
       <div className="courier-view courier-view--error">
-        <span className="courier-error-icon">⚠</span>
+        <span className="courier-error-icon">!</span>
         <p className="courier-error-title">Failed to load route</p>
         <p className="courier-error-sub">{error}</p>
         <button className="courier-back-btn" onClick={() => fetchData()}>Retry</button>
@@ -94,13 +89,13 @@ export default function CourierView() {
     <div className="courier-view">
       <header className="courier-topbar">
         <button className="courier-back-icon" onClick={() => navigate('/')} aria-label="Back">
-          ←
+          Back
         </button>
         <span className="courier-title">{courierData?.name ?? `Courier ${courierId}`}</span>
         <span className={`courier-ws-pill ${wsConnected ? 'courier-ws-pill--live' : 'courier-ws-pill--off'}`}>
           {wsConnected ? 'Live' : 'Offline'}
         </span>
-        {directionsLoading && <span className="courier-route-loading">Route loading…</span>}
+        {directionsLoading && <span className="courier-route-loading">Route loading...</span>}
       </header>
 
       <CourierMap

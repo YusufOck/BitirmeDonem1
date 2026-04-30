@@ -4,24 +4,90 @@
   position: relative;
 }
 
-.map-overlay-layer {
+.map-proof-controls {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  pointer-events: none;
-  box-shadow: inset 0 0 40px rgba(11, 15, 25, 0.8); /* Vignette effect */
+  top: 14px;
+  left: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: rgba(17, 16, 16, 0.84);
+  backdrop-filter: blur(10px);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
-/* Ensure mapbox canvas is rounded if container is rounded */
+.map-proof-controls div {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.map-proof-controls button {
+  min-height: 28px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.legend-line {
+  width: 22px;
+  height: 0;
+  border-top: 3px solid var(--primary-accent);
+  display: inline-block;
+}
+
+.legend-line--original {
+  border-top-color: #d1d5db;
+  border-top-style: dashed;
+}
+
+.legend-line--optimized {
+  border-top-color: #3b82f6;
+}
+
+.map-overlay-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 40px rgba(11, 15, 25, 0.8);
+}
+
 .mapboxgl-canvas {
-  border-radius: 16px;
+  border-radius: 8px;
+}
+
+.stop-marker {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--marker-color);
+  border: 2px solid var(--surface-color);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.stop-marker--delay {
+  width: 14px;
+  height: 14px;
+  background: var(--warning);
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.72);
 }
 
 .courier-marker {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   background-color: var(--surface-color);
   border: 2px solid var(--primary-accent);
   border-radius: 50%;
@@ -29,11 +95,13 @@
   align-items: center;
   justify-content: center;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.6);
-  font-size: 16px;
+  color: var(--text-primary);
+  font-size: 0.68rem;
+  font-weight: 900;
   transition: transform 0.2s ease;
 }
 
 .courier-marker:hover {
-  transform: scale(1.15);
+  transform: scale(1.12);
   box-shadow: 0 6px 14px rgba(0, 0, 0, 0.8);
 }

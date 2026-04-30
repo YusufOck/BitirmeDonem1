@@ -2,6 +2,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  border-radius: 8px;
 }
 
 .package-list-header {
@@ -134,6 +135,12 @@
   background: rgba(245, 158, 11, 0.1);
   color: var(--warning);
   border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.status-unassigned {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.28);
 }
 
 .no-results {

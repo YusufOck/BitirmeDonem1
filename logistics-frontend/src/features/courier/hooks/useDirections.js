@@ -73,8 +73,10 @@ export function useDirections(stops) {
 
   useEffect(() => {
     if (!stops || stops.length < 2) {
-      setSteps([]);
-      setRouteGeometry(null);
+      queueMicrotask(() => {
+        setSteps([]);
+        setRouteGeometry(null);
+      });
       return;
     }
 
@@ -85,8 +87,10 @@ export function useDirections(stops) {
     const sorted = [...stops].sort((a, b) => a.stop_sequence - b.stop_sequence);
     const chunks = chunkStops(sorted);
 
-    setLoading(true);
-    setError(null);
+    queueMicrotask(() => {
+      setLoading(true);
+      setError(null);
+    });
 
     (async () => {
       try {

@@ -1,64 +1,81 @@
 .route-card-container {
-  /* Positioning it over the map */
   position: absolute;
   bottom: 24px;
   left: 24px;
   z-index: 10;
-  /* Ensures it sits on top of the mapbox canvas */
-
-  /* Transparency & Glass Effect */
-  background-color: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(8px);
-  /* Optional: Gives a nice frosted glass effect */
-  -webkit-backdrop-filter: blur(8px);
-  /* Safari support */
-
-  padding: 16px;
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  width: 240px;
-  font-family: system-ui, -apple-system, sans-serif;
+  background: rgba(17, 16, 16, 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 1rem;
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-color);
+  width: min(300px, calc(100% - 48px));
 }
 
 .route-card-explanation {
-  margin: 0 0 16px 0;
-  font-size: 14px;
-  color: #334155;
-  line-height: 1.5;
-  font-weight: 500;
+  margin: 0 0 0.9rem;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  line-height: 1.45;
+  font-weight: 700;
 }
 
 .route-card-metrics {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0.6rem;
 }
 
 .route-card-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.8rem;
 }
 
 .route-card-label {
-  font-size: 13px;
-  color: #64748b;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
 }
 
-.route-card-value-positive {
-  font-size: 14px;
-  font-weight: 600;
-  color: #16a34a;
-  /* Green */
+.route-card-value-positive,
+.route-card-value-neutral {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--success);
+  white-space: nowrap;
 }
 
-.route-card-value-negative {
-  font-size: 14px;
-  font-weight: 600;
-  color: #ef4444;
-  /* Red */
+.route-card-value-neutral {
+  color: var(--text-primary);
+}
+
+.route-card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.route-card-button {
+  min-height: 36px;
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.route-card-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.route-card-button--reject {
+  background: var(--danger);
+}
+
+.route-card-button--accept {
+  background: var(--success);
 }

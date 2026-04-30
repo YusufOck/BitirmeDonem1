@@ -3,72 +3,46 @@ import './RouteComparisonCard.css';
 
 export default function RouteComparisonCard({
   timeSaved,
-  moneySaved,
-  kmsDifference,
+  affectedStops,
   explanation,
   isVisible,
   onAccept,
   onReject,
-  isProcessing
+  isProcessing,
 }) {
   if (!isVisible) return null;
 
   return (
     <div className="route-card-container">
-      {/* Explanation Header */}
       <p className="route-card-explanation">
         {explanation}
       </p>
 
-      {/* Metrics Grid */}
       <div className="route-card-metrics">
-
-        {/* Time Row */}
         <div className="route-card-row">
-          <span className="route-card-label">
-            ⏱️ Time Saved
-          </span>
-          <span className="route-card-value-positive">
-            {timeSaved}
-          </span>
+          <span className="route-card-label">Delay reduction</span>
+          <span className="route-card-value-positive">{timeSaved}</span>
         </div>
-
-        {/* Distance Row */}
         <div className="route-card-row">
-          <span className="route-card-label">
-            📏 Distance
-          </span>
-          <span className="route-card-value-negative">
-            {kmsDifference}
-          </span>
+          <span className="route-card-label">Stops reordered</span>
+          <span className="route-card-value-neutral">{affectedStops}</span>
         </div>
-
-        {/* Money Row */}
-        <div className="route-card-row">
-          <span className="route-card-label">
-            💰 Cost Saved
-          </span>
-          <span className="route-card-value-positive">
-            {moneySaved}
-          </span>
-        </div>
-
       </div>
 
-      <div className="route-card-actions" style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
-        <button 
-          onClick={onReject} 
+      <div className="route-card-actions">
+        <button
+          className="route-card-button route-card-button--reject"
+          onClick={onReject}
           disabled={isProcessing}
-          style={{ flex: 1, padding: '8px', background: 'var(--danger)', color: 'white', border: 'none', borderRadius: '4px', cursor: isProcessing ? 'not-allowed' : 'pointer' }}
         >
           Reject
         </button>
-        <button 
-          onClick={onAccept} 
+        <button
+          className="route-card-button route-card-button--accept"
+          onClick={onAccept}
           disabled={isProcessing}
-          style={{ flex: 1, padding: '8px', background: 'var(--success)', color: 'white', border: 'none', borderRadius: '4px', cursor: isProcessing ? 'not-allowed' : 'pointer' }}
         >
-          {isProcessing ? 'Processing...' : 'Accept'}
+          {isProcessing ? 'Processing' : 'Accept'}
         </button>
       </div>
     </div>

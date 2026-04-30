@@ -5,18 +5,24 @@ import RouteComparisonCard from './RouteComparisonCard';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
-const renderCourierIcon = (type) => {
+const getVehicleLabel = (type) => {
   switch (type) {
-    case 'truck': return '🚚';
-    case 'motorcycle': return '🏍️';
-    case 'car': default: return '🚗';
-    case 'van': return '🚐';
+    case 'truck':
+      return 'TR';
+    case 'motorcycle':
+    case 'bike':
+      return 'MC';
+    case 'van':
+      return 'VN';
+    case 'car':
+    default:
+      return 'CR';
   }
 };
 
 export default function MapViewer({ routes, selectedCourierId, liveCouriers, pendingSuggestions = {}, handleSuggestionDecision }) {
   const [isProcessing, setIsProcessing] = useState(false);
-
+  const [showOriginal, setShowOriginal] = useState(true);
   const activeSuggestion = selectedCourierId !== null ? pendingSuggestions[selectedCourierId] : null;
 
   const handleAccept = async () => {
@@ -38,45 +44,40 @@ export default function MapViewer({ routes, selectedCourierId, liveCouriers, pen
       setIsProcessing(false);
     }
   };
+
   const routesToRender = selectedCourierId !== null
-    ? routes.filter(r => r.id === `route-${selectedCourierId}` || r.vehicle_id === selectedCourierId)
+    ? routes.filter((route) => route.id === `route-${selectedCourierId}` || route.vehicle_id === selectedCourierId)
     : routes;
 
-  // 2. Filter live markers so they disappear if another courier is selected
   const liveCouriersToRender = selectedCourierId !== null
-    ? liveCouriers.filter(c => c.vehicle_id === selectedCourierId)
+    ? liveCouriers.filter((courier) => courier.vehicle_id === selectedCourierId)
     : liveCouriers;
 
-  const naiveRouteToRender = selectedCourierId !== null
-    ? routes.find(r => r.id === `route-${selectedCourierId}` || r.vehicle_id === selectedCourierId)?.naiveGeometry
+  const originalRouteToRender = selectedCourierId !== null
+    ? routes.find((route) => route.id === `route-${selectedCourierId}` || route.vehicle_id === selectedCourierId)?.originalGeometry
     : null;
-
-  const firstRoute = routesToRender?.[0];
-  let startPoint = null;
-  let endPoint = null;
-
-  if (firstRoute?.stops?.length > 0) {
-    const firstStop = firstRoute.stops[0];
-    const lastStop = firstRoute.stops[firstRoute.stops.length - 1];
-
-    startPoint = [firstStop.latitude, firstStop.longitude];
-    endPoint = [lastStop.latitude, lastStop.longitude];
-
-  } else if (firstRoute?.geometry?.geometry?.coordinates?.length > 0) {
-    // Ultimate fallback if stops array is empty but geometry exists
-    const coords = firstRoute.geometry.geometry.coordinates;
-    startPoint = [coords[0][1], coords[0][0]];
-    endPoint = [coords[coords.length - 1][1], coords[coords.length - 1][0]];
-  }
-
 
   return (
     <div className="map-viewer-container">
+      <div className="map-proof-controls">
+        <div>
+          <span className="legend-line legend-line--original" />
+          <span>Original plan</span>
+        </div>
+        <div>
+          <span className="legend-line legend-line--optimized" />
+          <span>Optimized route</span>
+        </div>
+        <button onClick={() => setShowOriginal((value) => !value)}>
+          {showOriginal ? 'Hide original' : 'Show original'}
+        </button>
+      </div>
+
       <Map
         initialViewState={{
           longitude: 37.0150,
           latitude: 39.7505,
-          zoom: 11
+          zoom: 11,
         }}
         mapStyle="mapbox://styles/mapbox/dark-v11"
         mapboxAccessToken={MAPBOX_TOKEN}
@@ -84,14 +85,37 @@ export default function MapViewer({ routes, selectedCourierId, liveCouriers, pen
       >
         <RouteComparisonCard
           isVisible={!!activeSuggestion}
-          explanation="A new optimized route is available to reduce expected delay."
-          timeSaved={activeSuggestion ? `${activeSuggestion.estimated_time_savings_min || 0} mins` : ''}
-          kmsDifference="-1.2 km"
-          moneySaved="$2.50"
+          explanation="A resequenced route is ready for the selected courier."
+          timeSaved={activeSuggestion ? `${activeSuggestion.estimated_time_savings_min || 0} min` : ''}
+          affectedStops={activeSuggestion?.new_sequence?.length || 0}
           onAccept={handleAccept}
           onReject={handleReject}
           isProcessing={isProcessing}
         />
+
+        {showOriginal && originalRouteToRender && (
+          <Source
+            id="original-route-source"
+            type="geojson"
+            data={originalRouteToRender}
+          >
+            <Layer
+              id="original-route-layer"
+              type="line"
+              layout={{
+                'line-join': 'round',
+                'line-cap': 'round',
+              }}
+              paint={{
+                'line-color': '#d1d5db',
+                'line-width': 4,
+                'line-opacity': 0.72,
+                'line-dasharray': [1.6, 1.4],
+              }}
+            />
+          </Source>
+        )}
+
         {routesToRender && routesToRender.map((routeData, index) => (
           <React.Fragment key={`fragment-${routeData.id || index}`}>
             <Source
@@ -104,35 +128,27 @@ export default function MapViewer({ routes, selectedCourierId, liveCouriers, pen
                 type="line"
                 layout={{
                   'line-join': 'round',
-                  'line-cap': 'round'
+                  'line-cap': 'round',
                 }}
                 paint={{
                   'line-color': routeData.color || '#eb5647',
-                  'line-width': 5,
-                  'line-opacity': 0.8
+                  'line-width': selectedCourierId === null ? 5 : 6,
+                  'line-opacity': selectedCourierId === null ? 0.78 : 0.92,
                 }}
               />
             </Source>
 
-            {routeData.stops && routeData.stops.map((stop, sIndex) => (
+            {routeData.stops && routeData.stops.map((stop, stopIndex) => (
               <Marker
-                key={`stop-${routeData.id}-${stop.stop_id || sIndex}`}
+                key={`stop-${routeData.id}-${stop.stop_id || stopIndex}`}
                 longitude={stop.longitude}
                 latitude={stop.latitude}
                 anchor="center"
               >
                 <div
-                  className="stop-marker"
-                  style={{
-                    backgroundColor: routeData.color || '#eb5647',
-                    border: '2px solid var(--surface-color)',
-                    width: '12px',
-                    height: '12px',
-                    borderRadius: '50%',
-                    boxShadow: '0 0 4px rgba(0,0,0,0.5)',
-                    cursor: 'pointer'
-                  }}
-                  title={`${stop.stop_name || 'Stop'} ${stop.expected_delay_min > 0 ? `(Delay: ${stop.expected_delay_min}m)` : ''}`}
+                  className={`stop-marker ${Number(stop.expected_delay_min || 0) > 0 ? 'stop-marker--delay' : ''}`}
+                  style={{ '--marker-color': routeData.color || '#eb5647' }}
+                  title={`${stop.stop_name || 'Stop'} ${Number(stop.expected_delay_min || 0) > 0 ? `(Delay: ${stop.expected_delay_min}m)` : ''}`}
                 />
               </Marker>
             ))}
@@ -140,59 +156,35 @@ export default function MapViewer({ routes, selectedCourierId, liveCouriers, pen
         ))}
 
         {liveCouriersToRender
-          .filter(courier =>
+          .filter((courier) => (
             Array.isArray(courier.location) &&
-            typeof courier.location[0] === 'number' && !isNaN(courier.location[0]) &&
-            typeof courier.location[1] === 'number' && !isNaN(courier.location[1])
-          )
+            typeof courier.location[0] === 'number' && !Number.isNaN(courier.location[0]) &&
+            typeof courier.location[1] === 'number' && !Number.isNaN(courier.location[1])
+          ))
           .map((courier) => {
-          // Attempt to find the matching static route to grab the specific vehicleType (car/truck/etc)
-          const matchingRoute = routes.find(r => r.vehicle_id === courier.vehicle_id);
-          const vType = matchingRoute ? matchingRoute.vehicleType : 'car';
+            const matchingRoute = routes.find((route) => route.vehicle_id === courier.vehicle_id);
+            const vType = matchingRoute ? matchingRoute.vehicleType : 'car';
 
-          return (
-            <Marker
-              key={`live-${courier.courier_id}`}
-              longitude={courier.location[0]}
-              latitude={courier.location[1]}
-              anchor="center"
-              style={{ transition: 'transform 0.5s linear' }}
-            >
-              <div
-                className="courier-marker"
-                style={{
-                  borderColor: courier.color || 'var(--primary-accent)',
-                }}
-                title={`${courier.name} - ${courier.speed_kmh} km/h`}
+            return (
+              <Marker
+                key={`live-${courier.courier_id}`}
+                longitude={courier.location[0]}
+                latitude={courier.location[1]}
+                anchor="center"
+                style={{ transition: 'transform 0.5s linear' }}
               >
-                {renderCourierIcon(vType)}
-              </div>
-            </Marker>
-          );
-        })}
-
-        {naiveRouteToRender && (
-          <Source
-            id="naive-route-source"
-            type="geojson"
-            data={naiveRouteToRender}
-          >
-            <Layer
-              id="naive-route-layer"
-              type="line"
-              layout={{
-                'line-join': 'round',
-                'line-cap': 'round'
-              }}
-              paint={{
-                'line-color': '#707070',
-                'line-width': 4,
-                'line-opacity': 0.6,
-                'line-dasharray': [2, 2]
-              }}
-            />
-          </Source>
-        )}
+                <div
+                  className="courier-marker"
+                  style={{
+                    borderColor: courier.color || 'var(--primary-accent)',
+                  }}
+                  title={`${courier.name} - ${courier.speed_kmh} km/h`}
+                >
+                  {getVehicleLabel(vType)}
+                </div>
+              </Marker>
+            );
+          })}
 
         {activeSuggestion && activeSuggestion.geometry && (
           <Source
@@ -205,20 +197,19 @@ export default function MapViewer({ routes, selectedCourierId, liveCouriers, pen
               type="line"
               layout={{
                 'line-join': 'round',
-                'line-cap': 'round'
+                'line-cap': 'round',
               }}
               paint={{
                 'line-color': '#10b981',
                 'line-width': 6,
                 'line-opacity': 0.9,
-                'line-dasharray': [2, 1.5]
+                'line-dasharray': [2, 1.5],
               }}
             />
           </Source>
         )}
       </Map>
 
-      {/* Overlay to give it a premium feel */}
       <div className="map-overlay-layer pointer-events-none"></div>
     </div>
   );
