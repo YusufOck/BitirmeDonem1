@@ -16,7 +16,7 @@
 .route-card-explanation {
   margin: 0 0 0.9rem;
   font-size: 0.88rem;
-  color: var(--text-primary);
+  color: #f8fafc;
   line-height: 1.45;
   font-weight: 700;
 }
@@ -36,7 +36,7 @@
 
 .route-card-label {
   font-size: 0.82rem;
-  color: var(--text-secondary);
+  color: #cbd5e1;
 }
 
 .route-card-value-positive,
@@ -48,7 +48,7 @@
 }
 
 .route-card-value-neutral {
-  color: var(--text-primary);
+  color: #f8fafc;
 }
 
 .route-card-actions {

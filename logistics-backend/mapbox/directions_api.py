@@ -25,7 +25,7 @@ def get_final_route(
     # Format the ordered coordinates string
     coords_string = ";".join([c.mapbox_str for c in ordered_stops])
     
-    url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{coords_string}"
+    profile = os.getenv("MAPBOX_PROFILE", "driving-traffic")
     
     # Key Parameters for drawing maps
     params = {
@@ -36,10 +36,14 @@ def get_final_route(
         "access_token": access_token
     }
     
-    # Execute and parse
-    response = requests.get(url, params=params)
-    
-    if response.status_code == 200:
+    last_response = None
+    for current_profile in dict.fromkeys([profile, "driving"]):
+        url = f"https://api.mapbox.com/directions/v5/mapbox/{current_profile}/{coords_string}"
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            last_response = response
+            continue
+
         data = response.json()
         
         # The API returns a list of 'routes'. We take the first (and only) one.
@@ -53,10 +57,58 @@ def get_final_route(
             "weight_name": route["weight_name"]  # Usually 'routability'
         }
         return result
-    else:
-        print(f"Mapbox Directions API Error: {response.status_code}")
-        print(response.text)
-        return None
+
+    print(f"Mapbox Directions API Error: {last_response.status_code}")
+    print(last_response.text)
+    return None
+
+
+def get_route_alternatives(
+    ordered_stops: List[Coordinate],
+    access_token: str,
+    max_routes: int = 3,
+) -> list[Dict]:
+    """
+    Fetch real alternative road geometries from Mapbox for the same ordered stops.
+    If Mapbox cannot produce alternatives for the waypoint set, an empty list is
+    returned rather than fabricating extra routes.
+    """
+    if len(ordered_stops) < 2 or len(ordered_stops) > 25:
+        return []
+
+    coords_string = ";".join([c.mapbox_str for c in ordered_stops])
+    profile = os.getenv("MAPBOX_PROFILE", "driving-traffic")
+    params = {
+        "alternatives": "true",
+        "geometries": "geojson",
+        "overview": "full",
+        "steps": "false",
+        "access_token": access_token,
+    }
+
+    for current_profile in dict.fromkeys([profile, "driving"]):
+        url = f"https://api.mapbox.com/directions/v5/mapbox/{current_profile}/{coords_string}"
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            continue
+
+        data = response.json()
+        routes = data.get("routes", [])
+        if len(routes) <= 1:
+            return []
+
+        return [
+            {
+                "rank": index,
+                "geometry": route["geometry"],
+                "distance": route["distance"],
+                "duration": route["duration"],
+                "weight_name": route.get("weight_name"),
+            }
+            for index, route in enumerate(routes[:max_routes], start=1)
+        ]
+
+    return []
 
 # --- Example Usage ---
 if __name__ == "__main__":

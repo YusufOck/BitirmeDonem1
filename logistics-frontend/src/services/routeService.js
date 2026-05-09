@@ -1,7 +1,7 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const API_ROOT_URL = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
 
-const DEFAULT_DEPOT = {
+export const DEFAULT_DEPOT = {
   depot_latitude: 39.75,
   depot_longitude: 37.015,
 };
@@ -27,6 +27,10 @@ export const fetchStopPool = async () => {
 
 export const fetchCourierRoutes = async (courierId) => {
   return requestJson(`${API_BASE_URL}/couriers/${courierId}/routes`);
+};
+
+export const fetchModelInfo = async () => {
+  return requestJson(`${API_BASE_URL}/model-info`);
 };
 
 export const buildAutoDispatchRequest = (couriers = [], stopPool = []) => {
@@ -60,6 +64,16 @@ export const buildAutoDispatchRequest = (couriers = [], stopPool = []) => {
 
 export const fetchAutoDispatch = async (body) => {
   return requestJson(`${API_BASE_URL}/auto-dispatch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+};
+
+export const fetchScenarioReoptimization = async (body) => {
+  return requestJson(`${API_BASE_URL}/scenario/reoptimize`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

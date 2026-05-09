@@ -2,16 +2,29 @@ import { create } from 'zustand';
 import {
   buildAutoDispatchRequest,
   completeStopRequest,
+  DEFAULT_DEPOT,
   fetchAutoDispatch,
   fetchCourierRoutes,
   fetchCouriers,
   fetchFinalRoute,
+  fetchModelInfo,
+  fetchScenarioReoptimization,
   fetchStopPool,
   postSuggestionDecision,
 } from '../services/routeService';
 
 const ROUTE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#aa3bff'];
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/simulation';
+const DEFAULT_SCENARIO_CONTROLS = {
+  traffic_density: 70,
+  accident_severity: 30,
+  weather_condition: 'rain',
+  weather_severity: 55,
+  road_disruption: 25,
+  package_load: 60,
+  dispatch_hour: 17,
+  conservative_mode: false,
+};
 
 const round = (value, digits = 1) => {
   const num = Number(value);
@@ -113,6 +126,95 @@ const getStatusTone = (status) => {
   return 'success';
 };
 
+const asFeature = (geometry) => (geometry ? { type: 'Feature', geometry } : null);
+
+const serializeStopForScenario = (stop, index) => ({
+  stop_sequence: Number(stop.stop_sequence || stop.displaySequence || index + 1),
+  cumulative_delay_min: Number(stop.cumulative_delay_min || 0),
+  prev_stop_delay_min: Number(stop.prev_stop_delay_min || 0),
+  time_window_slack_min: Number(stop.time_window_slack_min || 480),
+  hist_slack_min: Number(stop.hist_slack_min || 54.69),
+  hist_delay_probability: Number(stop.hist_delay_probability || stop.delay_probability || 0.25),
+  distance_from_prev_km: stop.distance_from_prev_km ?? null,
+  planned_travel_min: stop.planned_travel_min ?? null,
+  road_type: stop.road_type ?? null,
+  traffic_level: stop.traffic_level ?? null,
+  weather_condition: stop.weather_condition ?? null,
+  hour_of_day: stop.hour_of_day ?? null,
+  day_of_week: stop.day_of_week ?? null,
+  congestion_ratio_mean: stop.congestion_ratio_mean ?? null,
+  incident_rate: stop.incident_rate ?? null,
+  road_surface_condition: stop.road_surface_condition ?? null,
+  road_surface_condition_enc: stop.road_surface_condition_enc ?? null,
+  delay_risk_score_mean: stop.delay_risk_score_mean ?? null,
+  package_count: stop.package_count ?? null,
+  package_weight_kg: stop.package_weight_kg ?? null,
+  vehicle_type: stop.vehicle_type ?? null,
+  road_incident: stop.road_incident ?? null,
+  incident_severity: stop.incident_severity ?? null,
+  temperature_c: stop.temperature_c ?? null,
+  precipitation_mm: stop.precipitation_mm ?? null,
+  wind_speed_kmh: stop.wind_speed_kmh ?? null,
+  visibility_km: stop.visibility_km ?? null,
+  overall_delay_factor: stop.overall_delay_factor ?? null,
+  time_window_duration_min: stop.time_window_duration_min ?? null,
+  stop_id: stop.stop_id ?? null,
+  stop_name: stop.stop_name ?? null,
+  latitude: stop.latitude,
+  longitude: stop.longitude,
+  feature_source: stop.feature_source ?? null,
+  delay_factors: Array.isArray(stop.delay_factors) ? stop.delay_factors : [],
+});
+
+const getScenarioCoordinates = (scenarioResult) => (
+  scenarioResult?.scenarioGeometry?.geometry?.coordinates || []
+);
+
+const normalizeScenarioResult = (result, vehicleId) => ({
+  ...result,
+  vehicleId,
+  baselineGeometry: asFeature(result.baseline_geometry),
+  scenarioGeometry: asFeature(result.scenario_geometry),
+  mapboxAlternatives: (result.mapbox_alternatives || []).map((alternative) => ({
+    ...alternative,
+    geometry: asFeature(alternative.geometry),
+  })),
+});
+
+const hasScenarioForRoute = (scenarioResult, route) => (
+  scenarioResult?.vehicleId === route.vehicle_id &&
+  getScenarioCoordinates(scenarioResult).length >= 2
+);
+
+const getSimulationCoordinates = (route, scenarioResult) => (
+  hasScenarioForRoute(scenarioResult, route)
+    ? getScenarioCoordinates(scenarioResult)
+    : route.geometry.geometry.coordinates
+);
+
+const getSimulationStops = (route, scenarioResult) => {
+  if (hasScenarioForRoute(scenarioResult, route) && Array.isArray(scenarioResult.scenario_route)) {
+    return [...scenarioResult.scenario_route]
+      .sort((a, b) => Number(a.optimized_position || 0) - Number(b.optimized_position || 0))
+      .filter((stop) => stop.latitude && stop.longitude)
+      .map((stop) => ({
+        stop_id: stop.stop_id,
+        lat: stop.latitude,
+        lon: stop.longitude,
+        dwell_seconds: 30,
+      }));
+  }
+
+  return (route.stops || [])
+    .filter((stop) => stop.latitude && stop.longitude)
+    .map((stop) => ({
+      stop_id: stop.stop_id,
+      lat: stop.latitude,
+      lon: stop.longitude,
+      dwell_seconds: 30,
+    }));
+};
+
 export const useRouteStore = create((set, get) => ({
   hasFetched: false,
   loading: false,
@@ -125,15 +227,81 @@ export const useRouteStore = create((set, get) => ({
   explanation: null,
   selectedCourierId: null,
   pendingSuggestions: {},
+  scenarioControls: DEFAULT_SCENARIO_CONTROLS,
+  scenarioResult: null,
+  scenarioLoading: false,
+  scenarioError: null,
+  modelInfo: null,
 
   liveCouriers: {},
   wsConnected: false,
   _wsRef: null,
   isConnecting: false,
+  simulationRouteMode: 'optimized',
 
   setSelectedCourier: (id) => set((state) => ({
     selectedCourierId: state.selectedCourierId === id ? null : id,
   })),
+
+  setScenarioControl: (key, value) => set((state) => ({
+    scenarioControls: {
+      ...state.scenarioControls,
+      [key]: value,
+    },
+    scenarioResult: null,
+    scenarioError: null,
+  })),
+
+  resetScenario: () => set({
+    scenarioControls: DEFAULT_SCENARIO_CONTROLS,
+    scenarioResult: null,
+    scenarioError: null,
+  }),
+
+  runScenario: async () => {
+    const state = get();
+    const selectedRoute = state.routes.find((route) => route.vehicle_id === state.selectedCourierId) || state.routes[0];
+    if (!selectedRoute || !selectedRoute.stops?.length) {
+      set({ scenarioError: 'No route is selected for scenario analysis.' });
+      return;
+    }
+
+    set({ scenarioLoading: true, scenarioError: null });
+
+    try {
+      const result = await fetchScenarioReoptimization({
+        ...DEFAULT_DEPOT,
+        stops: selectedRoute.stops.map(serializeStopForScenario),
+        controls: state.scenarioControls,
+        time_limit_seconds: 15,
+      });
+      const normalizedResult = normalizeScenarioResult(result, selectedRoute.vehicle_id);
+
+      if (state.wsConnected && state._wsRef?.readyState === WebSocket.OPEN) {
+        const coordinates = getScenarioCoordinates(normalizedResult);
+        if (coordinates.length >= 2) {
+          state._wsRef.send(JSON.stringify({
+            type: 'reroute',
+            courier_id: `courier-${selectedRoute.vehicle_id}`,
+            coordinates,
+            stops: getSimulationStops(selectedRoute, normalizedResult),
+            route_source: 'scenario',
+          }));
+        }
+      }
+
+      set({
+        scenarioResult: normalizedResult,
+        scenarioLoading: false,
+        simulationRouteMode: state.wsConnected ? 'scenario' : state.simulationRouteMode,
+      });
+    } catch (error) {
+      set({
+        scenarioError: error.message,
+        scenarioLoading: false,
+      });
+    }
+  },
 
   fetchData: async () => {
     if (get().hasFetched) return;
@@ -141,9 +309,10 @@ export const useRouteStore = create((set, get) => ({
     set({ loading: true, error: null });
 
     try {
-      const [dbCouriers, stopPool] = await Promise.all([
+      const [dbCouriers, stopPool, modelInfo] = await Promise.all([
         fetchCouriers(),
         fetchStopPool(),
+        fetchModelInfo().catch(() => null),
       ]);
       const requestBody = buildAutoDispatchRequest(dbCouriers, stopPool);
       const data = await fetchAutoDispatch(requestBody);
@@ -271,7 +440,10 @@ export const useRouteStore = create((set, get) => ({
         packages: parsedPackages,
         routeSummary: data.route_summary || null,
         explanation: data.explanation || null,
+        modelInfo,
         selectedCourierId: parsedCouriers[0]?.id ?? null,
+        scenarioResult: null,
+        scenarioError: null,
         loading: false,
         hasFetched: true,
       });
@@ -281,7 +453,7 @@ export const useRouteStore = create((set, get) => ({
   },
 
   startSimulation: () => {
-    const { routes, _wsRef, isConnecting, wsConnected } = get();
+    const { routes, _wsRef, isConnecting, wsConnected, scenarioResult } = get();
 
     if (routes.length === 0) return;
     if (isConnecting || wsConnected) return;
@@ -295,29 +467,33 @@ export const useRouteStore = create((set, get) => ({
     const ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
-      set({ wsConnected: true, isConnecting: false });
-
-      const configMsg = {
-        vehicles: routes.map((route) => ({
+      const vehicles = routes.map((route) => {
+        const usesScenario = hasScenarioForRoute(scenarioResult, route);
+        return {
           courier_id: `courier-${route.vehicle_id}`,
           name: route.courierName,
           vehicle_id: route.vehicle_id,
-          coordinates: route.geometry.geometry.coordinates,
-          color: route.color,
-          stops: (route.stops || [])
-            .filter((stop) => stop.latitude && stop.longitude)
-            .map((stop) => ({
-              stop_id: stop.stop_id,
-              lat: stop.latitude,
-              lon: stop.longitude,
-              dwell_seconds: 30,
-            })),
-        })),
+          coordinates: getSimulationCoordinates(route, scenarioResult),
+          color: usesScenario ? '#22d3ee' : route.color,
+          route_source: usesScenario ? 'scenario' : 'optimized',
+          stops: getSimulationStops(route, scenarioResult),
+        };
+      });
+
+      const configMsg = {
+        vehicles,
         speed_kmh: 60,
         loop: true,
       };
 
       ws.send(JSON.stringify(configMsg));
+      set({
+        wsConnected: true,
+        isConnecting: false,
+        simulationRouteMode: vehicles.some((vehicle) => vehicle.route_source === 'scenario')
+          ? 'scenario'
+          : 'optimized',
+      });
     };
 
     ws.onmessage = (event) => {
@@ -410,7 +586,7 @@ export const useRouteStore = create((set, get) => ({
     };
 
     ws.onclose = () => {
-      set({ wsConnected: false, isConnecting: false, _wsRef: null, liveCouriers: {} });
+      set({ wsConnected: false, isConnecting: false, _wsRef: null, liveCouriers: {}, simulationRouteMode: 'optimized' });
     };
 
     ws.onerror = (err) => {

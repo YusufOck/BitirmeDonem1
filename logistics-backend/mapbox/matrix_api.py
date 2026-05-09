@@ -20,22 +20,24 @@ def get_weight_matrices(
     # Format the coordinates string
     coords_string = ";".join([c.mapbox_str for c in coords])
     
-    # Build the request
-    url = f"https://api.mapbox.com/directions-matrix/v1/mapbox/driving/{coords_string}"
+    profile = os.getenv("MAPBOX_PROFILE", "driving-traffic")
     params = {
         "annotations": "duration,distance", 
         "access_token": access_token
     }
-    
-    response = requests.get(url, params=params)
-    
-    if response.status_code == 200:
-        data = response.json()
-        return data.get("durations"), data.get("distances")
-    else:
-        print(f"Mapbox API Error: {response.status_code}")
-        print(response.text)
-        return None, None
+
+    last_response = None
+    for current_profile in dict.fromkeys([profile, "driving"]):
+        url = f"https://api.mapbox.com/directions-matrix/v1/mapbox/{current_profile}/{coords_string}"
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("durations"), data.get("distances")
+        last_response = response
+
+    print(f"Mapbox API Error: {last_response.status_code}")
+    print(last_response.text)
+    return None, None
 
 # Example Usage 
 if __name__ == "__main__":

@@ -12,6 +12,16 @@ const getRiskClass = (riskLevel) => {
   return 'status-in-transit';
 };
 
+const getTopSignal = (pkg) => {
+  const factors = Array.isArray(pkg.delay_factors) ? pkg.delay_factors : [];
+  const priorityFactor = factors.find((factor) => factor.severity === 'danger')
+    || factors.find((factor) => factor.severity === 'warning')
+    || factors[0];
+
+  if (!priorityFactor) return null;
+  return `${priorityFactor.label}: ${priorityFactor.value}`;
+};
+
 export default function PackageList({ packages }) {
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -51,6 +61,7 @@ export default function PackageList({ packages }) {
               <th>Stop Name</th>
               <th>Courier</th>
               <th>Expected Delay</th>
+              <th>Top Signal</th>
               <th>Risk</th>
               <th>Severity</th>
             </tr>
@@ -70,6 +81,11 @@ export default function PackageList({ packages }) {
                       : 'On time'}
                   </td>
                   <td>
+                    {getTopSignal(pkg)
+                      ? <span className="signal-chip">{getTopSignal(pkg)}</span>
+                      : <span className="signal-muted">No active signal</span>}
+                  </td>
+                  <td>
                     <span className={`status-badge ${getRiskClass(pkg.risk_level)}`}>
                       {pkg.risk_level || 'unknown'}
                     </span>
@@ -83,7 +99,7 @@ export default function PackageList({ packages }) {
               ))
             ) : (
               <tr>
-                <td colSpan="6" className="no-results">
+                <td colSpan="7" className="no-results">
                   No stops found matching "{searchTerm}"
                 </td>
               </tr>

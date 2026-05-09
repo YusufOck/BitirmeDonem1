@@ -11,6 +11,15 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class DelayFactor(BaseModel):
+    """Human-readable factor explaining why a stop may be delayed."""
+
+    label: str
+    value: str
+    impact: str
+    severity: Literal["info", "warning", "danger"]
+
+
 # ── Request models ────────────────────────────────────────────────────────────
 
 class StopInput(BaseModel):
@@ -33,12 +42,30 @@ class StopInput(BaseModel):
     hour_of_day: int | None = Field(default=None, ge=0, le=23)
     day_of_week: int | None = Field(default=None, ge=0, le=6, description="0=Monday … 6=Sunday")
     stop_progress_ratio: float | None = Field(default=None, ge=0.0, le=1.0, description="Computed automatically if None: (stop_index+1) / total_stops")
+    congestion_ratio_mean: float | None = Field(default=None, ge=0.0, le=1.0)
+    incident_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    road_surface_condition: Literal["dry", "wet", "icy", "snow_covered"] | None = None
+    road_surface_condition_enc: int | None = Field(default=None, ge=0, le=3)
+    delay_risk_score_mean: float | None = Field(default=None, ge=0.0, le=1.0)
+    package_count: int | None = Field(default=None, ge=0)
+    package_weight_kg: float | None = Field(default=None, ge=0.0)
+    vehicle_type: Literal["car", "motorcycle", "truck", "van"] | None = None
+    road_incident: int | None = Field(default=None, ge=0, le=1)
+    incident_severity: float | None = Field(default=None, ge=0.0, le=1.0)
+    temperature_c: float | None = None
+    precipitation_mm: float | None = Field(default=None, ge=0.0)
+    wind_speed_kmh: float | None = Field(default=None, ge=0.0)
+    visibility_km: float | None = Field(default=None, ge=0.0)
+    overall_delay_factor: float | None = Field(default=None, ge=0.0)
+    time_window_duration_min: float | None = Field(default=None, ge=0.0)
 
     # Display-only fields — not used by ML, passed through to response
     stop_id: str | None = None
     stop_name: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    feature_source: str | None = None
+    delay_factors: list[DelayFactor] = Field(default_factory=list)
 
 
 class OptimizeRequest(BaseModel):
@@ -151,6 +178,19 @@ class OptimizedStop(BaseModel):
     longitude: float | None = None
     planned_travel_min: float | None = None
     time_window_slack_min: float
+    feature_source: str | None = None
+    road_type: Literal["highway", "urban", "rural", "mountain"] | None = None
+    traffic_level: Literal["low", "moderate", "high", "congested"] | None = None
+    weather_condition: Literal["clear", "cloudy", "wind", "fog", "rain", "snow"] | None = None
+    congestion_ratio_mean: float | None = None
+    road_incident: int | None = None
+    incident_severity: float | None = None
+    precipitation_mm: float | None = None
+    wind_speed_kmh: float | None = None
+    visibility_km: float | None = None
+    package_count: int | None = None
+    package_weight_kg: float | None = None
+    delay_factors: list[DelayFactor] = Field(default_factory=list)
 
     # ML prediction fields
     delay_probability: float = Field(..., description="Cascade-adjusted delay probability (0-1)")
@@ -380,6 +420,61 @@ class WhatIfResponse(BaseModel):
 
 
 # ── Fleet monitoring models ───────────────────────────────────────────────────
+
+class ScenarioControls(BaseModel):
+    """Continuous what-if controls adjusted by the dispatcher UI."""
+
+    traffic_density: int = Field(default=45, ge=0, le=100, description="0=no traffic, 100=gridlock")
+    accident_severity: int = Field(default=0, ge=0, le=100, description="0=no accident, 100=major incident")
+    weather_condition: Literal["clear", "cloudy", "wind", "fog", "rain", "snow"] = "clear"
+    weather_severity: int = Field(default=10, ge=0, le=100, description="Intensity of weather impact")
+    road_disruption: int = Field(default=0, ge=0, le=100, description="Road work/closure pressure")
+    package_load: int = Field(default=50, ge=0, le=100, description="Relative package load pressure")
+    dispatch_hour: int = Field(default=9, ge=0, le=23)
+    conservative_mode: bool = Field(
+        default=False,
+        description="When true, optimize with P90 delay estimates instead of expected delay.",
+    )
+
+
+class ScenarioRouteRequest(BaseModel):
+    """Run a real ML + OR-Tools + Mapbox re-optimization for one route scenario."""
+
+    depot_latitude: float
+    depot_longitude: float
+    stops: list[StopInput] = Field(..., min_length=2)
+    controls: ScenarioControls = Field(default_factory=ScenarioControls)
+    time_limit_seconds: int = Field(default=15, ge=5, le=60)
+
+
+class ScenarioImpactFactor(BaseModel):
+    label: str
+    before: str
+    after: str
+    impact: str
+    severity: Literal["info", "warning", "danger"]
+
+
+class ScenarioReoptimizationResponse(BaseModel):
+    """Scenario lab response with auditable route, model, and map evidence."""
+
+    baseline_summary: RouteSummary
+    scenario_summary: RouteSummary
+    baseline_route: list[OptimizedStop]
+    scenario_route: list[OptimizedStop]
+    baseline_geometry: RouteGeometry
+    scenario_geometry: RouteGeometry
+    baseline_metrics: dict
+    scenario_metrics: dict
+    delta: dict
+    factor_impacts: list[ScenarioImpactFactor]
+    controls_applied: ScenarioControls
+    order_changed: bool
+    sequence_before: list[str | None]
+    sequence_after: list[str | None]
+    explanation: str
+    mapbox_alternatives: list[dict] = Field(default_factory=list)
+
 
 class FleetRouteSummary(BaseModel):
     """Per-route summary row in the fleet risk overview."""

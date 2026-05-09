@@ -20,7 +20,14 @@ const getVehicleLabel = (type) => {
   }
 };
 
-export default function MapViewer({ routes, selectedCourierId, liveCouriers, pendingSuggestions = {}, handleSuggestionDecision }) {
+export default function MapViewer({
+  routes,
+  selectedCourierId,
+  liveCouriers,
+  pendingSuggestions = {},
+  handleSuggestionDecision,
+  scenarioResult = null,
+}) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showOriginal, setShowOriginal] = useState(true);
   const activeSuggestion = selectedCourierId !== null ? pendingSuggestions[selectedCourierId] : null;
@@ -68,6 +75,18 @@ export default function MapViewer({ routes, selectedCourierId, liveCouriers, pen
           <span className="legend-line legend-line--optimized" />
           <span>Optimized route</span>
         </div>
+        {scenarioResult?.scenarioGeometry && (
+          <div>
+            <span className="legend-line legend-line--scenario" />
+            <span>Scenario route</span>
+          </div>
+        )}
+        {scenarioResult?.mapboxAlternatives?.length > 0 && (
+          <div>
+            <span className="legend-line legend-line--alternative" />
+            <span>Mapbox alternative</span>
+          </div>
+        )}
         <button onClick={() => setShowOriginal((value) => !value)}>
           {showOriginal ? 'Hide original' : 'Show original'}
         </button>
@@ -154,6 +173,54 @@ export default function MapViewer({ routes, selectedCourierId, liveCouriers, pen
             ))}
           </React.Fragment>
         ))}
+
+        {scenarioResult?.mapboxAlternatives?.map((alternative, index) => (
+          alternative.geometry ? (
+            <Source
+              key={`scenario-alt-${alternative.rank || index}`}
+              id={`scenario-alt-source-${alternative.rank || index}`}
+              type="geojson"
+              data={alternative.geometry}
+            >
+              <Layer
+                id={`scenario-alt-layer-${alternative.rank || index}`}
+                type="line"
+                layout={{
+                  'line-join': 'round',
+                  'line-cap': 'round',
+                }}
+                paint={{
+                  'line-color': '#a78bfa',
+                  'line-width': 4,
+                  'line-opacity': 0.56,
+                  'line-dasharray': [2.4, 1.4],
+                }}
+              />
+            </Source>
+          ) : null
+        ))}
+
+        {scenarioResult?.scenarioGeometry && (
+          <Source
+            id="scenario-route-source"
+            type="geojson"
+            data={scenarioResult.scenarioGeometry}
+          >
+            <Layer
+              id="scenario-route-layer"
+              type="line"
+              layout={{
+                'line-join': 'round',
+                'line-cap': 'round',
+              }}
+              paint={{
+                'line-color': '#22d3ee',
+                'line-width': 7,
+                'line-opacity': 0.96,
+              }}
+            />
+          </Source>
+        )}
 
         {liveCouriersToRender
           .filter((courier) => (

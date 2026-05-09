@@ -10,6 +10,10 @@ export default function CourierCard({ courier, isSelected, onSelect, hasSuggesti
   const metrics = courier.routeMetrics || {};
   const comparison = courier.comparison;
   const statusTone = courier.statusTone || 'success';
+  const notableFactors = (courier.stops || [])
+    .flatMap((stop) => (Array.isArray(stop.delay_factors) ? stop.delay_factors : []))
+    .filter((factor) => factor.severity === 'danger' || factor.severity === 'warning')
+    .slice(0, 3);
 
   return (
     <div
@@ -100,6 +104,15 @@ export default function CourierCard({ courier, isSelected, onSelect, hasSuggesti
             <div className="comparison-strip">
               <span>Original: {formatNumber(comparison.originalDistanceKm)} km / {comparison.originalDurationMin} min</span>
               <span>Optimized: {formatNumber(comparison.optimizedDistanceKm)} km / {comparison.optimizedDurationMin} min</span>
+            </div>
+          )}
+          {notableFactors.length > 0 && (
+            <div className="courier-factor-strip">
+              {notableFactors.map((factor, index) => (
+                <span key={`${factor.label}-${index}`} className={`courier-factor courier-factor--${factor.severity}`}>
+                  <b>{factor.label}</b> {factor.value}
+                </span>
+              ))}
             </div>
           )}
         </div>

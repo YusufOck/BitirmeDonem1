@@ -1,24 +1,23 @@
 :root {
-  /* Nocturne Slate Colors */
-  --bg-color: #111010;
-  --surface-color: #212121;
-  --surface-color-light: #2c2c2c;
-  --text-primary: #f8fafc;
-  --text-secondary: #a0a0a0;
-  --text-tertiary: #707070;
-  
-  --primary-accent: #eb5647;
-  --primary-accent-glow: rgba(235, 86, 71, 0.5);
+  --bg-color: #eaf6ff;
+  --surface-color: #ffffff;
+  --surface-color-light: #f2f8ff;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #7c8aa0;
+
+  --primary-accent: #2563eb;
+  --primary-accent-glow: rgba(37, 99, 235, 0.22);
   --success: #10b981;
-  --success-glow: rgba(16, 185, 129, 0.4);
+  --success-glow: rgba(16, 185, 129, 0.28);
   --warning: #f59e0b;
-  --warning-glow: rgba(245, 158, 11, 0.4);
+  --warning-glow: rgba(245, 158, 11, 0.28);
   --danger: #ef4444;
 
-  --border-color: rgba(255, 255, 255, 0.1);
-  --glass-bg: rgba(33, 33, 33, 0.6);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  
+  --border-color: rgba(15, 23, 42, 0.12);
+  --glass-bg: rgba(255, 255, 255, 0.78);
+  --glass-border: rgba(15, 23, 42, 0.1);
+
   --font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }
 
@@ -26,54 +25,62 @@ body {
   margin: 0;
   padding: 0;
   font-family: var(--font-family);
-  background-color: var(--bg-color);
+  background: var(--bg-color);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
 }
 
-/* Glassmorphism Utilities */
-.glass-panel {
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-  border-radius: 12px;
-}
-
 * {
   box-sizing: border-box;
 }
 
-h1, h2, h3, h4, h5, h6, p {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
   margin: 0;
 }
 
-/* Custom Scrollbar for dark theme */
+button,
+input,
+select {
+  font: inherit;
+}
+
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-color);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--surface-color-light);
-  border-radius: 4px;
+  background: rgba(37, 99, 235, 0.22);
+  border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
+  background: rgba(37, 99, 235, 0.38);
 }
 
-/* Global Utilities */
 .text-primary { color: var(--primary-accent); }
-.text-danger { color: var(--danger); font-weight: 600; }
-.text-warning { color: var(--warning); font-weight: 600; }
-.text-success { color: var(--success); font-weight: 600; }
-.border-danger { border: 1px solid var(--danger) !important; box-shadow: 0 4px 20px rgba(239, 68, 68, 0.2) !important; }
-
+.text-danger { color: var(--danger); font-weight: 800; }
+.text-warning { color: var(--warning); font-weight: 800; }
+.text-success { color: var(--success); font-weight: 800; }
+.border-danger { border: 1px solid var(--danger) !important; box-shadow: 0 4px 20px rgba(239, 68, 68, 0.12) !important; }

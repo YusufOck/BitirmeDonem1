@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -26,15 +27,19 @@ from api.schemas import (
     FullRouteResponse,
     OptimizeRequest,
     OptimizeResponse,
+    ScenarioImpactFactor,
+    ScenarioReoptimizationResponse,
+    ScenarioRouteRequest,
     VehicleRoute,
 )
 from optimization.route_optimizer import RouteOptimizer
 from optimization.mapbox_adapter import mapbox_to_pipeline
 from mapbox.matrix_api import get_weight_matrices
-from mapbox.directions_api import get_final_route
+from mapbox.directions_api import get_final_route, get_route_alternatives
 from mapbox.coordinate import Coordinate
 from ml.inference import get_model_info
 from ai.explainer import check_ollama_health, generate_explanation
+from api.data_pipeline import pipeline
 from api.fleet_store import fleet_store
 from cache.redis_client import set_matrix_cache, set_matrix_index_map, set_route_state, set_stops_cache
 from db.models import Courier, Route, RouteStatus, Stop, StopPool, StopStatus, User, UserRole
@@ -97,6 +102,247 @@ async def _build_vehicle_routes(
         for vid in sorted(groups)
     ]
     return list(await asyncio.gather(*tasks))
+
+
+def _traffic_level_from_density(density: int) -> str:
+    if density >= 85:
+        return "congested"
+    if density >= 65:
+        return "high"
+    if density >= 35:
+        return "moderate"
+    return "low"
+
+
+def _congestion_ratio_from_density(density: int) -> float:
+    # Model feature means current_speed/free_flow_speed; lower means worse traffic.
+    return round(max(0.15, min(0.95, 0.95 - (density / 100.0) * 0.80)), 4)
+
+
+def _scenario_weather_features(condition: str, severity: int) -> dict:
+    intensity = severity / 100.0
+    if condition == "rain":
+        return {
+            "precipitation_mm": round(3.0 + intensity * 22.0, 2),
+            "wind_speed_kmh": round(8.0 + intensity * 28.0, 1),
+            "visibility_km": round(max(1.0, 14.0 - intensity * 10.0), 1),
+            "road_surface_condition": "wet",
+        }
+    if condition == "snow":
+        return {
+            "precipitation_mm": round(2.0 + intensity * 18.0, 2),
+            "wind_speed_kmh": round(10.0 + intensity * 34.0, 1),
+            "visibility_km": round(max(0.6, 10.0 - intensity * 8.5), 1),
+            "road_surface_condition": "snow_covered",
+        }
+    if condition == "fog":
+        return {
+            "precipitation_mm": round(intensity * 2.0, 2),
+            "wind_speed_kmh": round(4.0 + intensity * 10.0, 1),
+            "visibility_km": round(max(0.4, 8.0 - intensity * 7.0), 1),
+            "road_surface_condition": "wet",
+        }
+    if condition == "wind":
+        return {
+            "precipitation_mm": 0.0,
+            "wind_speed_kmh": round(15.0 + intensity * 55.0, 1),
+            "visibility_km": round(max(4.0, 15.0 - intensity * 4.0), 1),
+            "road_surface_condition": "dry",
+        }
+    return {
+        "precipitation_mm": 0.0,
+        "wind_speed_kmh": round(4.0 + intensity * 8.0, 1),
+        "visibility_km": round(16.0 - intensity * 2.0, 1),
+        "road_surface_condition": "dry",
+    }
+
+
+def _build_scenario_factors(controls, congestion_ratio: float, delay_factor: float) -> list[dict]:
+    traffic_level = _traffic_level_from_density(controls.traffic_density)
+    return [
+        {
+            "label": "Traffic density",
+            "value": f"{controls.traffic_density}/100 ({traffic_level.title()})",
+            "impact": f"Speed ratio set to {congestion_ratio:.2f}; lower ratio increases ML delay risk",
+            "severity": "danger" if controls.traffic_density >= 80 else ("warning" if controls.traffic_density >= 55 else "info"),
+        },
+        {
+            "label": "Accident severity",
+            "value": f"{controls.accident_severity}/100",
+            "impact": "Converted to road_incident and incident_severity features",
+            "severity": "danger" if controls.accident_severity >= 65 else ("warning" if controls.accident_severity > 0 else "info"),
+        },
+        {
+            "label": "Weather pressure",
+            "value": f"{controls.weather_condition.title()} {controls.weather_severity}/100",
+            "impact": "Updates precipitation, wind, visibility, surface, and weather risk",
+            "severity": "danger" if controls.weather_condition in {"snow", "fog"} and controls.weather_severity >= 60 else ("warning" if controls.weather_severity >= 45 else "info"),
+        },
+        {
+            "label": "Road disruption",
+            "value": f"{controls.road_disruption}/100",
+            "impact": "Adds disruption pressure to travel matrix and delay factor",
+            "severity": "danger" if controls.road_disruption >= 70 else ("warning" if controls.road_disruption >= 35 else "info"),
+        },
+        {
+            "label": "ML delay factor",
+            "value": f"{delay_factor:.2f}x",
+            "impact": "Combined factor sent to the trained delay model",
+            "severity": "danger" if delay_factor >= 2.0 else ("warning" if delay_factor >= 1.45 else "info"),
+        },
+    ]
+
+
+def _apply_scenario_to_stops(stops: list[dict], controls) -> tuple[list[dict], list[ScenarioImpactFactor]]:
+    traffic_level = _traffic_level_from_density(controls.traffic_density)
+    congestion_ratio = _congestion_ratio_from_density(controls.traffic_density)
+    weather = _scenario_weather_features(controls.weather_condition, controls.weather_severity)
+    accident_ratio = controls.accident_severity / 100.0
+    weather_ratio = controls.weather_severity / 100.0
+    disruption_ratio = controls.road_disruption / 100.0
+    load_multiplier = 0.65 + (controls.package_load / 100.0) * 1.25
+    overall_delay_factor = (
+        1.0
+        + (controls.traffic_density / 100.0) * 0.55
+        + accident_ratio * 0.55
+        + weather_ratio * 0.35
+        + disruption_ratio * 0.45
+    )
+
+    scenario_factors = _build_scenario_factors(
+        controls,
+        congestion_ratio=congestion_ratio,
+        delay_factor=overall_delay_factor,
+    )
+
+    modified: list[dict] = []
+    for stop in stops:
+        current = deepcopy(stop)
+        base_hist = float(current.get("hist_delay_probability") or 0.25)
+        base_slack = float(current.get("time_window_slack_min") or 75.0)
+        package_weight = float(current.get("package_weight_kg") or 25.0)
+        package_count = int(current.get("package_count") or 1)
+        time_pressure = max(0.0, (90.0 - min(base_slack, 90.0)) / 90.0)
+        stop_risk_amplifier = 1.0 + ((base_hist + time_pressure) / 2.0) * 0.45
+
+        current.update({
+            "traffic_level": traffic_level,
+            "congestion_ratio_mean": congestion_ratio,
+            "weather_condition": controls.weather_condition,
+            "hour_of_day": controls.dispatch_hour,
+            "is_rush_hour": int(7 <= controls.dispatch_hour <= 9 or 16 <= controls.dispatch_hour <= 19),
+            "road_incident": int(controls.accident_severity > 0 or controls.road_disruption >= 55),
+            "incident_severity": round(max(accident_ratio, disruption_ratio * 0.85), 3),
+            "incident_rate": round(max(float(current.get("incident_rate") or 0.05), accident_ratio * 0.75, disruption_ratio * 0.55), 4),
+            "overall_delay_factor": round(overall_delay_factor * stop_risk_amplifier, 3),
+            "hist_delay_probability": round(min(0.95, base_hist + accident_ratio * 0.22 + disruption_ratio * 0.18 + weather_ratio * 0.12), 4),
+            "delay_risk_score_mean": round(min(0.98, float(current.get("delay_risk_score_mean") or base_hist) + weather_ratio * 0.25 + accident_ratio * 0.15), 4),
+            "time_window_slack_min": round(max(5.0, base_slack - controls.traffic_density * 0.10 - controls.road_disruption * 0.12), 2),
+            "package_weight_kg": round(package_weight * load_multiplier, 2),
+            "package_count": max(1, round(package_count * (0.75 + controls.package_load / 100.0))),
+            "feature_source": "scenario_lab_ml_features",
+            "delay_factors": scenario_factors,
+            **weather,
+        })
+        modified.append(current)
+
+    impacts = [
+        ScenarioImpactFactor(
+            label="Traffic density",
+            before="CSV/Mapbox baseline",
+            after=f"{controls.traffic_density}/100",
+            impact="Changes traffic_level and congestion_ratio_mean before ML prediction.",
+            severity="danger" if controls.traffic_density >= 80 else ("warning" if controls.traffic_density >= 55 else "info"),
+        ),
+        ScenarioImpactFactor(
+            label="Accident severity",
+            before="Route incident profile",
+            after=f"{controls.accident_severity}/100",
+            impact="Changes road_incident, incident_rate, and incident_severity.",
+            severity="danger" if controls.accident_severity >= 65 else ("warning" if controls.accident_severity > 0 else "info"),
+        ),
+        ScenarioImpactFactor(
+            label="Weather",
+            before="Route weather profile",
+            after=f"{controls.weather_condition} / {controls.weather_severity}/100",
+            impact="Changes precipitation, wind, visibility, road surface, and weather risk.",
+            severity="danger" if controls.weather_condition in {"snow", "fog"} and controls.weather_severity >= 60 else ("warning" if controls.weather_severity >= 45 else "info"),
+        ),
+        ScenarioImpactFactor(
+            label="Package load",
+            before="Stop package profile",
+            after=f"{controls.package_load}/100",
+            impact="Scales package weight and package count before ML scoring.",
+            severity="warning" if controls.package_load >= 75 else "info",
+        ),
+    ]
+    return modified, impacts
+
+
+def _adjust_travel_matrix_for_scenario(matrix: list[list[float]], controls) -> list[list[float]]:
+    factor = (
+        1.0
+        + (controls.traffic_density / 100.0) * 0.45
+        + (controls.accident_severity / 100.0) * 0.25
+        + (controls.road_disruption / 100.0) * 0.35
+        + (controls.weather_severity / 100.0) * 0.18
+    )
+    return [
+        [
+            0.0 if i == j else round(float(value) * factor, 3)
+            for j, value in enumerate(row)
+        ]
+        for i, row in enumerate(matrix)
+    ]
+
+
+def _coords_from_route(
+    route: list[dict],
+    depot_lat: float,
+    depot_lon: float,
+) -> list[Coordinate]:
+    ordered = sorted(route, key=lambda stop: (stop["vehicle_id"], stop["optimized_position"]))
+    coords = [Coordinate(lat=depot_lat, lon=depot_lon, name="depot")]
+    coords.extend(
+        Coordinate(
+            lat=stop["latitude"],
+            lon=stop["longitude"],
+            name=stop.get("stop_name") or stop.get("stop_id") or "stop",
+        )
+        for stop in ordered
+        if stop.get("latitude") is not None and stop.get("longitude") is not None
+    )
+    return coords
+
+
+def _route_metrics(route_data: dict, result: dict) -> dict:
+    return {
+        "distance_km": round(float(route_data["distance"]) / 1000.0, 2),
+        "duration_min": round(float(route_data["duration"]) / 60.0, 1),
+        "expected_delay_min": round(float(result["route_summary"].get("expected_total_delay_min", 0.0)), 1),
+        "risk_score": round(float(result["route_summary"].get("overall_risk_score", 0.0)), 3),
+        "high_risk_stops": int(result["route_summary"].get("high_risk_stop_count", 0)),
+        "severe_stops": int(result["route_summary"].get("severe_stop_count", 0)),
+    }
+
+
+def _scenario_explanation(
+    controls,
+    baseline_metrics: dict,
+    scenario_metrics: dict,
+    order_changed: bool,
+) -> str:
+    delay_delta = scenario_metrics["expected_delay_min"] - baseline_metrics["expected_delay_min"]
+    time_delta = scenario_metrics["duration_min"] - baseline_metrics["duration_min"]
+    order_text = "changed the stop order" if order_changed else "kept the same stop order"
+    return (
+        f"The scenario was evaluated with the trained ML delay model, not by a visual shortcut. "
+        f"Traffic density {controls.traffic_density}/100, accident severity {controls.accident_severity}/100, "
+        f"{controls.weather_condition} weather at {controls.weather_severity}/100 intensity, and road disruption "
+        f"{controls.road_disruption}/100 were converted into model features. OR-Tools then {order_text} using "
+        f"the updated ML delay costs and Mapbox road-time matrix. Expected delay changed by {delay_delta:+.1f} min "
+        f"and road duration changed by {time_delta:+.1f} min."
+    )
 
 
 
@@ -310,6 +556,8 @@ async def auto_dispatch(body: AutoDispatchRequest, db: Session = Depends(get_db)
 
     try:
         target_date = dt.strptime(body.date, "%Y-%m-%d")
+        dispatch_hour = 9
+        dispatch_day = target_date.weekday()
     except ValueError:
         raise HTTPException(status_code=400, detail="date formatı YYYY-MM-DD olmalı")
 
@@ -370,10 +618,19 @@ async def auto_dispatch(body: AutoDispatchRequest, db: Session = Depends(get_db)
 
     for v_idx, assignment in enumerate(body.assignments):
         route_id = vehicle_route_map[v_idx]
+        courier = couriers_db[assignment.courier_id]
 
         courier_stops: list[StopInput] = []
         for i, sid in enumerate(assignment.stop_pool_ids):
             sp = stops_db[sid]
+            stop_context = pipeline.get_stop_context(
+                stop_code=sp.name,
+                stop_sequence=i + 1,
+                hour_of_day=dispatch_hour,
+                day_of_week=dispatch_day,
+                vehicle_type=courier.vehicle_type,
+                courier_id=f"courier-{v_idx}",
+            )
             courier_stops.append(StopInput(
                 stop_sequence=i + 1,
                 stop_id=str(sp.id),
@@ -382,6 +639,7 @@ async def auto_dispatch(body: AutoDispatchRequest, db: Session = Depends(get_db)
                 longitude=sp.longitude,
                 cumulative_delay_min=0.0,
                 prev_stop_delay_min=0.0,
+                **stop_context,
             ))
 
         opt_request = OptimizeRequest(
@@ -431,6 +689,159 @@ async def auto_dispatch(body: AutoDispatchRequest, db: Session = Depends(get_db)
         route_summary=combined_summary,
         use_p90=body.use_p90,
         num_vehicles=len(body.assignments),
+    )
+
+
+@router.post(
+    "/scenario/reoptimize",
+    response_model=ScenarioReoptimizationResponse,
+    tags=["scenario"],
+    summary="Run ML-backed scenario re-optimization",
+    description=(
+        "Recomputes stop delay with user-controlled traffic, weather, accident, "
+        "load, and disruption factors; then solves a new OR-Tools route and "
+        "draws the resulting road geometry through Mapbox."
+    ),
+)
+async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizationResponse:
+    token = os.getenv("MAPBOX_TOKEN")
+    if not token:
+        raise HTTPException(status_code=503, detail="MAPBOX_TOKEN not configured")
+
+    if body.depot_latitude == 0.0 and body.depot_longitude == 0.0:
+        raise HTTPException(status_code=422, detail="depot coordinates are missing")
+
+    if not all(stop.latitude is not None and stop.longitude is not None for stop in body.stops):
+        raise HTTPException(status_code=422, detail="All stops must have latitude and longitude")
+
+    coords = [Coordinate(lat=body.depot_latitude, lon=body.depot_longitude, name="depot")]
+    coords.extend(
+        Coordinate(lat=stop.latitude, lon=stop.longitude, name=stop.stop_name or str(index))
+        for index, stop in enumerate(body.stops)
+    )
+
+    duration_matrix, distance_matrix = await asyncio.to_thread(get_weight_matrices, coords, token)
+    if duration_matrix is None or distance_matrix is None:
+        raise HTTPException(status_code=502, detail="Mapbox Matrix API request failed")
+
+    stops_as_dicts = [stop.model_dump() for stop in body.stops]
+    stops_enriched, travel_time_matrix = mapbox_to_pipeline(
+        stops_as_dicts,
+        duration_matrix,
+        distance_matrix,
+    )
+
+    try:
+        baseline_result = await asyncio.to_thread(
+            _optimizer.optimize,
+            stops_input=stops_enriched,
+            use_p90=False,
+            num_vehicles=1,
+            time_limit_seconds=body.time_limit_seconds,
+            travel_time_matrix=travel_time_matrix,
+        )
+
+        scenario_stops, factor_impacts = _apply_scenario_to_stops(
+            stops_enriched,
+            body.controls,
+        )
+        scenario_matrix = _adjust_travel_matrix_for_scenario(
+            travel_time_matrix,
+            body.controls,
+        )
+        scenario_result = await asyncio.to_thread(
+            _optimizer.optimize,
+            stops_input=scenario_stops,
+            use_p90=body.controls.conservative_mode,
+            num_vehicles=1,
+            time_limit_seconds=body.time_limit_seconds,
+            travel_time_matrix=scenario_matrix,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Scenario optimization failed: {exc}") from exc
+
+    baseline_result["route_summary"]["recommended_departure_shift_min"] = round(
+        baseline_result["route_summary"].get("expected_total_delay_min", 0.0),
+        1,
+    )
+    scenario_result["route_summary"]["recommended_departure_shift_min"] = round(
+        scenario_result["route_summary"].get("expected_total_delay_min", 0.0),
+        1,
+    )
+
+    baseline_coords = _coords_from_route(
+        baseline_result["optimized_route"],
+        body.depot_latitude,
+        body.depot_longitude,
+    )
+    scenario_coords = _coords_from_route(
+        scenario_result["optimized_route"],
+        body.depot_latitude,
+        body.depot_longitude,
+    )
+
+    baseline_route_data = await asyncio.to_thread(get_final_route, baseline_coords, token)
+    scenario_route_data = await asyncio.to_thread(get_final_route, scenario_coords, token)
+    if baseline_route_data is None or scenario_route_data is None:
+        raise HTTPException(status_code=502, detail="Mapbox Directions API request failed")
+
+    raw_alternatives = await asyncio.to_thread(get_route_alternatives, scenario_coords, token, 3)
+    mapbox_alternatives = []
+    for alt in raw_alternatives:
+        if (
+            abs(float(alt["distance"]) - float(scenario_route_data["distance"])) < 1.0
+            and abs(float(alt["duration"]) - float(scenario_route_data["duration"])) < 1.0
+        ):
+            continue
+        mapbox_alternatives.append({
+            "rank": alt["rank"],
+            "geometry": alt["geometry"],
+            "distance_m": alt["distance"],
+            "duration_s": alt["duration"],
+            "duration_min": round(float(alt["duration"]) / 60.0, 1),
+            "distance_km": round(float(alt["distance"]) / 1000.0, 2),
+            "source": "mapbox_directions_alternative",
+        })
+
+    baseline_metrics = _route_metrics(baseline_route_data, baseline_result)
+    scenario_metrics = _route_metrics(scenario_route_data, scenario_result)
+    sequence_before = [stop.get("stop_name") for stop in baseline_result["optimized_route"]]
+    sequence_after = [stop.get("stop_name") for stop in scenario_result["optimized_route"]]
+    order_changed = sequence_before != sequence_after
+
+    delta = {
+        "distance_km": round(scenario_metrics["distance_km"] - baseline_metrics["distance_km"], 2),
+        "duration_min": round(scenario_metrics["duration_min"] - baseline_metrics["duration_min"], 1),
+        "expected_delay_min": round(scenario_metrics["expected_delay_min"] - baseline_metrics["expected_delay_min"], 1),
+        "risk_score": round(scenario_metrics["risk_score"] - baseline_metrics["risk_score"], 3),
+        "high_risk_stops": scenario_metrics["high_risk_stops"] - baseline_metrics["high_risk_stops"],
+        "severe_stops": scenario_metrics["severe_stops"] - baseline_metrics["severe_stops"],
+    }
+
+    return ScenarioReoptimizationResponse(
+        baseline_summary=baseline_result["route_summary"],
+        scenario_summary=scenario_result["route_summary"],
+        baseline_route=baseline_result["optimized_route"],
+        scenario_route=scenario_result["optimized_route"],
+        baseline_geometry=baseline_route_data["geometry"],
+        scenario_geometry=scenario_route_data["geometry"],
+        baseline_metrics=baseline_metrics,
+        scenario_metrics=scenario_metrics,
+        delta=delta,
+        factor_impacts=factor_impacts,
+        controls_applied=body.controls,
+        order_changed=order_changed,
+        sequence_before=sequence_before,
+        sequence_after=sequence_after,
+        explanation=_scenario_explanation(
+            body.controls,
+            baseline_metrics,
+            scenario_metrics,
+            order_changed,
+        ),
+        mapbox_alternatives=mapbox_alternatives,
     )
 
 

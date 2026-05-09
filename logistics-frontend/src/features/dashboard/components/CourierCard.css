@@ -23,7 +23,7 @@
 
 .courier-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.36);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.14);
 }
 
 .courier-card:focus-visible {
@@ -115,7 +115,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  background: rgba(255, 255, 255, 0.05);
+  background: #f8fbff;
   padding: 0.5rem 0.85rem;
   border-radius: 8px;
   border: 1px solid var(--border-color);
@@ -148,7 +148,7 @@
   padding: 0.45rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.14);
+  background: #f8fbff;
   color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 700;
@@ -285,7 +285,7 @@
 }
 
 .metric-box {
-  background: rgba(0, 0, 0, 0.18);
+  background: #f8fbff;
   border: 1px solid var(--border-color);
   padding: 0.55rem;
   border-radius: 8px;
@@ -315,7 +315,7 @@
   padding: 0.65rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: #f8fbff;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -326,4 +326,36 @@
   font-size: 0.76rem;
   font-weight: 700;
   line-height: 1.35;
+}
+
+.courier-factor-strip {
+  margin-top: 0.65rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.courier-factor {
+  padding: 0.32rem 0.46rem;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.courier-factor b {
+  color: var(--text-primary);
+}
+
+.courier-factor--warning {
+  border-color: rgba(245, 158, 11, 0.38);
+  color: #92400e;
+}
+
+.courier-factor--danger {
+  border-color: rgba(239, 68, 68, 0.42);
+  color: #991b1b;
 }

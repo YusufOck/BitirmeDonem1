@@ -479,6 +479,35 @@ def get_model_info() -> dict:
             "vehicle_type":          dict(_VEHICLE_TYPE_ENC),
             "road_surface_condition": dict(_ROAD_SURFACE_ENC),
         },
+        "evaluation": {
+            "trained_at": "2026-04-19",
+            "regressor": {
+                "test_mae_min": 1.332,
+                "test_rmse_min": 2.005,
+                "test_r2": 0.9964,
+                "within_2_min": 0.793,
+                "within_5_min": 0.972,
+            },
+            "risk_classifier": {
+                "severe_recall": 0.9942,
+                "severe_precision": 0.9607,
+                "severe_f1": 0.9771,
+                "severity_threshold_min": 24.0,
+            },
+            "p90": {
+                "coverage": 0.741,
+                "target_coverage": 0.90,
+                "pinball_loss": 0.8832,
+                "note": "P90 is useful as a conservative guide, but coverage is below the 90% target.",
+            },
+            "top_features": [
+                {"name": "planned_travel_min", "gain": 785},
+                {"name": "travel_delay_ratio", "gain": 588},
+                {"name": "distance_from_prev_km", "gain": 475},
+                {"name": "cumulative_delay_min", "gain": 363},
+                {"name": "weight_per_package", "gain": 269},
+            ],
+        },
     }
 
 

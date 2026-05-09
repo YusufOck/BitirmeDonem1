@@ -1,15 +1,15 @@
 .layout-container {
   display: flex;
   min-height: 100vh;
-  background-color: var(--bg-color);
+  background: var(--bg-color);
 }
 
 .sidebar {
-  width: 260px;
+  width: 224px;
   display: flex;
   flex-direction: column;
-  padding: 2rem 1.5rem;
-  border-right: 1px solid var(--glass-border);
+  padding: 1rem;
+  border-right: 1px solid var(--border-color);
   border-radius: 0;
   border-top: none;
   border-bottom: none;
@@ -18,71 +18,75 @@
   top: 0;
   height: 100vh;
   z-index: 50;
+  background: rgba(255, 255, 255, 0.86);
 }
 
 .sidebar-header {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 3rem;
+  gap: 0.8rem;
+  padding: 0.35rem 0.25rem 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .sidebar-header h2 {
-  font-size: 1.25rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 850;
+  line-height: 1.15;
 }
 
-/* Share these with Dashboard for consistency */
 .logo-icon {
-  width: 40px;
-  height: 40px;
-  background: linear-gradient(135deg, var(--primary-accent), #c93c20);
-  border-radius: 10px;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--primary-accent), var(--success));
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 1.25rem;
-  color: white;
-  box-shadow: 0 4px 12px var(--primary-accent-glow);
+  color: #fff;
+  font-size: 1.2rem;
+  font-weight: 900;
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.22);
 }
 
 .sidebar-nav {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.45rem;
   flex: 1;
 }
 
 .nav-link {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 0.875rem 1rem;
-  border-radius: 12px;
+  gap: 0.75rem;
+  padding: 0.78rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
   color: var(--text-secondary);
   text-decoration: none;
-  font-weight: 500;
-  transition: all 0.2s ease;
+  font-size: 0.92rem;
+  font-weight: 800;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
 .nav-link svg {
-  width: 20px;
-  height: 20px;
-  opacity: 0.7;
+  width: 19px;
+  height: 19px;
+  opacity: 0.75;
 }
 
 .nav-link:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-primary);
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--primary-accent);
+  border-color: rgba(37, 99, 235, 0.12);
 }
 
 .nav-link.active {
-  background: var(--primary-accent-glow);
   color: #fff;
-  box-shadow: inset 2px 0 0 var(--primary-accent);
+  background: linear-gradient(135deg, var(--primary-accent), #0ea5e9);
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.18);
 }
 
 .nav-link.active svg {
@@ -90,15 +94,76 @@
 }
 
 .sidebar-footer {
-  margin-top: auto;
-  padding-top: 2rem;
+  padding-top: 1rem;
   border-top: 1px solid var(--border-color);
+}
+
+.system-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  font-weight: 850;
+}
+
+.status-indicator {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.status-indicator.online {
+  background: var(--success);
+  box-shadow: 0 0 12px var(--success-glow);
 }
 
 .main-content {
   flex: 1;
   display: flex;
   flex-direction: column;
-  max-width: calc(100vw - 260px);
-  overflow-y: auto;
+  max-width: calc(100vw - 224px);
+  height: 100vh;
+  overflow: hidden;
+}
+
+@media (max-width: 980px) {
+  .layout-container {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: relative;
+    flex-direction: row;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.7rem;
+  }
+
+  .sidebar-header {
+    margin: 0;
+    padding: 0;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+
+  .sidebar-footer {
+    display: none;
+  }
+
+  .main-content {
+    max-width: 100vw;
+    height: auto;
+    min-height: calc(100vh - 70px);
+    overflow: visible;
+  }
 }
