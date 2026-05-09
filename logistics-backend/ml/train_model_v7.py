@@ -77,7 +77,7 @@ _ROOT_DIR = os.path.dirname(_ML_DIR)
 if _ML_DIR not in sys.path:
     sys.path.insert(0, _ML_DIR)
 
-from model_classes import (  # noqa: E402
+from ml.model_classes import (  # noqa: E402
     _PreFitCalibrator, RouteDelayPredictor, _augment_features,
     _ArcsinhRegressor, SEVERE_DELAY_THRESHOLD_MIN,
 )

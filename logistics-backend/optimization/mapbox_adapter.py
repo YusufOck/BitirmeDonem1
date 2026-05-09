@@ -88,6 +88,10 @@ def mapbox_to_pipeline(
         enriched = dict(stop)
         enriched["planned_travel_min"]   = travel_sec / 60.0
         enriched["distance_from_prev_km"] = dist_m / 1000.0
+        enriched["depot_to_stop_travel_min"] = duration_matrix_sec[0][curr_node] / 60.0
+        enriched["stop_to_depot_travel_min"] = duration_matrix_sec[curr_node][0] / 60.0
+        enriched["depot_to_stop_distance_km"] = distance_matrix_m[0][curr_node] / 1000.0
+        enriched["stop_to_depot_distance_km"] = distance_matrix_m[curr_node][0] / 1000.0
         stops_enriched.append(enriched)
 
     # ── 2. N×N travel_time_matrix (dakika) — OR-Tools için ───────────────────

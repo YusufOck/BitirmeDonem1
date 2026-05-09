@@ -1,0 +1,6 @@
+file,check,severity,count,detail
+route_stops.csv,negative_delay,warning,25,Negative delay means early arrival; training clamps this to 0 but raw data should label it explicitly.
+routes.csv,route_total_delay_mismatch,warning,196,196/200 routes differ by more than 1.0 between route-level and stop-level data.
+routes.csv,route_planned_duration_mismatch,error,200,200/200 routes differ by more than 1.0 between route-level and stop-level data.
+routes.csv,route_actual_duration_mismatch,error,200,200/200 routes differ by more than 1.0 between route-level and stop-level data.
+route_stops.csv,missed_window_rate_high,warning,1242,Missed-window rate is 85.6%; this is unusually high and indicates stress-test/synthetic data.

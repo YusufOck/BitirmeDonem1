@@ -20,11 +20,12 @@ from api.tracking_routes import router as tracking_router
 from database import get_db
 from mapbox.coordinate import Coordinate
 from mapbox.directions_api import get_final_route
+from api.logging_config import setup_logger
 
 load_dotenv()
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
 
-logger = logging.getLogger(__name__)
+logger = setup_logger("logistics.main")
 
 openapi_tags = [
     {

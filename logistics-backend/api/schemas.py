@@ -151,6 +151,10 @@ class ExplanationResult(BaseModel):
         default_factory=list,
         description="Plain-language explanation of why each moved stop was repositioned",
     )
+    grounding_score: float = Field(default=1.0, description="0.0 to 1.0 indicating adherence to optimization facts")
+    hallucination_risk: Literal["low", "medium", "high"] = Field(default="low", description="Risk level for fabricated facts")
+    should_answer: bool = Field(default=True, description="False if output is blocked due to hallucination")
+    sources_used: list[str] = Field(default_factory=list, description="List of valid stops considered by the model")
     model_used: str = Field(..., description="Ollama model that generated this explanation")
     generation_time_ms: int = Field(..., description="Time taken to generate the explanation (ms)")
     parse_warning: str | None = Field(
@@ -231,6 +235,14 @@ class RouteSummary(BaseModel):
         description="0-based indices of stops that could not be served (empty = all served)",
     )
     cost_mode: Literal["expected", "p90"]
+    optimization_status: str | None = Field(
+        default=None,
+        description="improved | not_improved | infeasible, based on explicit route-cost comparison",
+    )
+    optimization_improvement_pct: float | None = Field(
+        default=None,
+        description="Cost improvement versus original stop order. Negative/zero means no real improvement.",
+    )
 
 
 class OptimizeResponse(BaseModel):
@@ -243,6 +255,10 @@ class OptimizeResponse(BaseModel):
     route_summary: RouteSummary
     ml_predictions: dict = Field(..., description="Raw predict_route() output for debugging / transparency")
     vrp_result: dict = Field(..., description="Raw solve_vrp() output for debugging")
+    optimization_comparison: dict | None = Field(
+        default=None,
+        description="Original vs optimized order, explicit route costs, cost drivers, and warnings.",
+    )
     use_p90: bool
     num_vehicles: int
     explanation: ExplanationResult | None = Field(
@@ -308,6 +324,10 @@ class FullRouteResponse(BaseModel):
         description="All stops in OR-Tools optimized order, each enriched with ML delay predictions",
     )
     route_summary: RouteSummary
+    optimization_comparison: dict | None = Field(
+        default=None,
+        description="Original vs optimized order, explicit route costs, cost drivers, and warnings.",
+    )
     use_p90: bool
     num_vehicles: int
     explanation: ExplanationResult | None = Field(
@@ -437,6 +457,22 @@ class ScenarioControls(BaseModel):
     )
 
 
+class SegmentConditionOverride(BaseModel):
+    """Manual road-segment penalty applied between two existing stops."""
+
+    from_stop_id: str = Field(..., description="Source stop_id for the edited segment")
+    to_stop_id: str = Field(..., description="Target stop_id for the edited segment")
+    traffic_density: int = Field(default=0, ge=0, le=100)
+    accident_severity: int = Field(default=0, ge=0, le=100)
+    road_closure: bool = False
+    weather_severity: int = Field(default=0, ge=0, le=100)
+    speed_reduction: int = Field(default=0, ge=0, le=100)
+    extra_delay_min: float = Field(default=0.0, ge=0.0, le=240.0)
+    risk_level: Literal["low", "medium", "high", "critical"] = "low"
+    priority: int = Field(default=50, ge=0, le=100)
+    road_type: Literal["highway", "urban", "rural", "mountain"] = "urban"
+
+
 class ScenarioRouteRequest(BaseModel):
     """Run a real ML + OR-Tools + Mapbox re-optimization for one route scenario."""
 
@@ -444,6 +480,13 @@ class ScenarioRouteRequest(BaseModel):
     depot_longitude: float
     stops: list[StopInput] = Field(..., min_length=2)
     controls: ScenarioControls = Field(default_factory=ScenarioControls)
+    segment_overrides: list[SegmentConditionOverride] = Field(
+        default_factory=list,
+        description=(
+            "Manual penalties for currently visible route segments. "
+            "These modify the Mapbox travel-time matrix before OR-Tools solves the route."
+        ),
+    )
     time_limit_seconds: int = Field(default=15, ge=5, le=60)
 
 
@@ -467,6 +510,8 @@ class ScenarioReoptimizationResponse(BaseModel):
     baseline_metrics: dict
     scenario_metrics: dict
     delta: dict
+    baseline_comparison: dict | None = None
+    scenario_comparison: dict | None = None
     factor_impacts: list[ScenarioImpactFactor]
     controls_applied: ScenarioControls
     order_changed: bool
@@ -474,6 +519,28 @@ class ScenarioReoptimizationResponse(BaseModel):
     sequence_after: list[str | None]
     explanation: str
     mapbox_alternatives: list[dict] = Field(default_factory=list)
+
+
+class ScenarioCreateRequest(BaseModel):
+    """Request payload to save a scenario."""
+    name: str
+    controls: ScenarioControls = Field(default_factory=ScenarioControls)
+    stops: list[StopInput] = Field(default_factory=list)
+    segment_overrides: list[SegmentConditionOverride] = Field(default_factory=list)
+
+
+class ScenarioResponse(BaseModel):
+    """Response payload for saved scenario."""
+    id: int
+    name: str
+    controls: dict
+    segment_overrides: list
+    stops: list
+    baseline_summary: dict | None = None
+    scenario_summary: dict | None = None
+    delta: dict | None = None
+    created_at: str
+    updated_at: str
 
 
 class FleetRouteSummary(BaseModel):

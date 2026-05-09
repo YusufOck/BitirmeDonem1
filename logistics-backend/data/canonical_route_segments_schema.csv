@@ -1,0 +1,25 @@
+field,type,required,description
+segment_id,string,yes,Stable unique id for a route segment
+route_id,string,yes,Route identifier
+from_stop_id,string,yes,Start stop/depot id
+to_stop_id,string,yes,End stop id
+start_lat,float,yes,Segment start latitude
+start_lng,float,yes,Segment start longitude
+end_lat,float,yes,Segment end latitude
+end_lng,float,yes,Segment end longitude
+road_distance_km,float,yes,Road distance from routing tool or trusted source
+base_duration_min,float,yes,Base road duration without scenario overlays
+traffic_level,string,yes,low/moderate/high/congested
+congestion_ratio,float,no,current_speed/free_flow_speed ratio where lower is worse
+weather_condition,string,yes,clear/cloudy/wind/fog/rain/snow
+accident_status,string,yes,none/minor/major/blocked
+accident_severity,float,yes,0.0 to 1.0
+road_closure,boolean,yes,true if the segment should be avoided
+speed_limit_kmh,float,no,Known or inferred legal speed limit
+road_type,string,yes,highway/urban/rural/mountain
+priority,int,no,0-100 delivery priority or business importance
+risk_score,float,no,0.0 to 1.0 risk score after feature fusion
+historical_delay_min,float,no,Historical median or mean delay for similar segment
+predicted_delay_min,float,no,Model output for this segment/arrival
+data_source,string,yes,mapbox/osrm/manual/csv/simulated
+timestamp,datetime,yes,Observation or scenario timestamp

@@ -173,12 +173,50 @@ def _parse_llm_json(text: str) -> dict[str, Any]:
         "overall_assessment": text,
         "risk_factors": [],
         "recommendations": [],
+        "reorder_rationale": [],
         "stop_alerts": [],
         "parse_warning": (
             "Ollama did not return valid JSON. "
             "Raw model output is included as overall_assessment."
         ),
     }
+
+
+def _check_grounding(parsed: dict[str, Any], optimized_route: list[dict]) -> dict[str, Any]:
+    """
+    Validate that the LLM explanation matches the actual optimization data.
+    Adds grounding_score, hallucination_risk, should_answer, and sources_used.
+    """
+    valid_stop_names = {
+        (s.get("stop_name") or f"Stop {s.get('original_stop_index', 0) + 1}").strip().lower()
+        for s in optimized_route
+    }
+    
+    mentioned_stops = []
+    for alert in parsed.get("stop_alerts", []):
+        name = alert.get("stop_name", "").strip().lower()
+        if name:
+            mentioned_stops.append(name)
+
+    unrecognized = [m for m in mentioned_stops if m not in valid_stop_names]
+
+    if unrecognized:
+        parsed["grounding_score"] = 0.0
+        parsed["hallucination_risk"] = "high"
+        parsed["should_answer"] = False
+        parsed["overall_assessment"] = "[HALLUCINATION BLOCKED] The model referenced non-existent stops: " + ", ".join(unrecognized)
+        parsed["risk_factors"] = []
+        parsed["recommendations"] = []
+        parsed["reorder_rationale"] = []
+        parsed["stop_alerts"] = []
+    else:
+        parsed["grounding_score"] = 1.0
+        parsed["hallucination_risk"] = "low"
+        parsed["should_answer"] = True
+
+    parsed["sources_used"] = [s.get("stop_name") or f"Stop {s.get('original_stop_index', 0) + 1}" for s in optimized_route]
+    
+    return parsed
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -208,6 +246,10 @@ def generate_explanation(
         risk_factors        list[str]
         recommendations     list[str]
         stop_alerts         list[{stop_name, message}]
+        grounding_score     float
+        hallucination_risk  str
+        should_answer       bool
+        sources_used        list[str]
         model_used          str
         generation_time_ms  int
 
@@ -260,8 +302,13 @@ def generate_explanation(
         return {"error": f"Unexpected Ollama response format: {exc}"}
 
     parsed = _parse_llm_json(raw_text)
-    parsed["model_used"]          = resolved_model
-    parsed["generation_time_ms"]  = elapsed_ms
+    
+    # Grounding Check
+    parsed = _check_grounding(parsed, optimized_route)
+
+    parsed["model_used"] = resolved_model
+    parsed["generation_time_ms"] = int((time.monotonic() - t0) * 1000)
+
     return parsed
 
 

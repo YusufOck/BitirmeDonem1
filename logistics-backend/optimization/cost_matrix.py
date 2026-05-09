@@ -1,52 +1,47 @@
 """
-cost_matrix.py
---------------
-Build the (N+1) x (N+1) integer cost matrix for OR-Tools.
+Build the OR-Tools cost matrix.
 
-Index 0  → depot (all zeros)
-Index 1…N → delivery stops (mapped from 0-based stops_data / ml_predictions)
+Index 0    -> depot
+Index 1..N -> delivery stops
 
-Cost formula:
-    cost[i][j] = round((travel_time[i→j] + ml_delay[j]) * 100)
-
-Units: 0.01 minutes as integer  (multiply by 100 to keep 2-decimal precision)
+The matrix uses an explicit, auditable cost formula from
+`optimization.scoring`. Depot-to-first-stop and last-stop-to-depot legs are
+included; older versions left those edges at zero and therefore optimized an
+incomplete route.
 """
 
 from __future__ import annotations
 
-DEFAULT_TRAVEL_MIN = 30.6   # dataset median fallback when planned_travel_min is missing
+from optimization.scoring import score_leg
 
 
-def build_cost_matrix(
+DEFAULT_TRAVEL_MIN = 30.6
+
+
+def _planned_times(stops_data: list[dict]) -> list[float]:
+    return [float(stop.get("planned_travel_min") or DEFAULT_TRAVEL_MIN) for stop in stops_data]
+
+
+def _depot_to_stop(stop: dict, fallback_min: float) -> float:
+    return float(stop.get("depot_to_stop_travel_min") or fallback_min)
+
+
+def _stop_to_depot(stop: dict, fallback_min: float) -> float:
+    return float(stop.get("stop_to_depot_travel_min") or fallback_min)
+
+
+def build_cost_matrix_with_breakdown(
     stops_data: list[dict],
     ml_predictions: list[dict],
     use_p90: bool = False,
     travel_time_matrix: list[list[float]] | None = None,
-) -> list[list[int]]:
+) -> tuple[list[list[int]], list[list[dict]]]:
     """
-    Build an (N+1) x (N+1) integer cost matrix for OR-Tools.
+    Return `(matrix, breakdown)`.
 
-    Parameters
-    ----------
-    stops_data : list[dict]
-        N delivery stop dicts. Each may contain 'planned_travel_min' (float).
-    ml_predictions : list[dict]
-        Output of predict_route()['stop_predictions'], one per stop.
-        Must contain 'expected_delay_min'; optionally 'delay_p90_min'.
-    use_p90 : bool
-        If True, use delay_p90_min for the ML cost addend (conservative routing).
-        Falls back to expected_delay_min when delay_p90_min is None.
-    travel_time_matrix : list[list[float]] | None
-        Optional NxN float matrix of leg durations (minutes) between delivery
-        stops. Rows/cols are 0-based delivery-stop indices.
-        If None, planned_travel_min of the destination stop is used as
-        travel time from *any* predecessor (approximation for demo / no-Mapbox mode).
-
-    Returns
-    -------
-    list[list[int]]
-        (N+1) x (N+1) matrix. Row/col 0 = depot (all zeros).
-        cost[i][j] = round((travel_time_i_to_j + ml_delay_j) * 100)
+    `matrix` is the integer cost matrix consumed by OR-Tools.
+    `breakdown` mirrors the matrix shape and stores every cost component in
+    minutes, which lets API responses and tests explain why a leg is expensive.
     """
     n = len(stops_data)
     if n == 0:
@@ -62,43 +57,55 @@ def build_cost_matrix(
                 f"{len(travel_time_matrix)}x{len(travel_time_matrix[0]) if travel_time_matrix else 0}"
             )
 
-    # Extract per-stop planned travel times (fallback when no NxN matrix)
-    planned_times: list[float] = [
-        float(s.get("planned_travel_min") or DEFAULT_TRAVEL_MIN)
-        for s in stops_data
-    ]
-
-    # Extract ML delay values per stop
-    delays: list[float] = []
-    for pred in ml_predictions:
-        if use_p90:
-            val = pred.get("delay_p90_min")
-            if val is None:
-                val = pred.get("expected_delay_min", 0.0)
-        else:
-            val = pred.get("expected_delay_min", 0.0)
-        delays.append(max(float(val), 0.0))   # clamp negatives to 0
-
-    # Build (N+1) x (N+1) matrix with depot at index 0
+    planned = _planned_times(stops_data)
     size = n + 1
     matrix: list[list[int]] = [[0] * size for _ in range(size)]
+    breakdown: list[list[dict]] = [[{} for _ in range(size)] for _ in range(size)]
 
-    for i in range(1, size):      # from-node (1-based delivery index)
-        for j in range(1, size):  # to-node
-            if i == j:
-                matrix[i][j] = 0
-                continue
-            stop_j = j - 1        # 0-based delivery index for destination
-            stop_i = i - 1        # 0-based delivery index for origin
-
-            if travel_time_matrix is not None:
-                travel = float(travel_time_matrix[stop_i][stop_j])
+    for from_node in range(size):
+        for to_node in range(size):
+            if from_node == to_node:
+                leg = score_leg(from_node, to_node, 0.0, None, None, use_p90)
+            elif to_node == 0:
+                origin_idx = from_node - 1
+                travel = _stop_to_depot(stops_data[origin_idx], planned[origin_idx])
+                leg = score_leg(from_node, to_node, travel, None, None, use_p90)
             else:
-                # Fallback: use destination stop's planned travel time
-                travel = planned_times[stop_j]
+                dest_idx = to_node - 1
+                if from_node == 0:
+                    travel = _depot_to_stop(stops_data[dest_idx], planned[dest_idx])
+                elif travel_time_matrix is not None:
+                    origin_idx = from_node - 1
+                    travel = float(travel_time_matrix[origin_idx][dest_idx])
+                else:
+                    travel = planned[dest_idx]
 
-            raw_cost = travel + delays[stop_j]
-            matrix[i][j] = int(round(raw_cost * 100))
+                leg = score_leg(
+                    from_node=from_node,
+                    to_node=to_node,
+                    base_travel_min=travel,
+                    destination_stop=stops_data[dest_idx],
+                    destination_prediction=ml_predictions[dest_idx],
+                    use_p90=use_p90,
+                )
 
-    # Depot row (0) and depot column (0) remain all zeros (already initialized)
+            matrix[from_node][to_node] = leg.total_cost_units
+            breakdown[from_node][to_node] = leg.to_dict()
+
+    return matrix, breakdown
+
+
+def build_cost_matrix(
+    stops_data: list[dict],
+    ml_predictions: list[dict],
+    use_p90: bool = False,
+    travel_time_matrix: list[list[float]] | None = None,
+) -> list[list[int]]:
+    """Backward-compatible wrapper returning only the integer matrix."""
+    matrix, _ = build_cost_matrix_with_breakdown(
+        stops_data=stops_data,
+        ml_predictions=ml_predictions,
+        use_p90=use_p90,
+        travel_time_matrix=travel_time_matrix,
+    )
     return matrix

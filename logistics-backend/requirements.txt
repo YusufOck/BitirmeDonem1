@@ -13,3 +13,4 @@ redis
 lightgbm
 xgboost
 catboost
+matplotlib

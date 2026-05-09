@@ -21,4 +21,5 @@ def get_db():
 
 def create_tables():
     from db.models import Base
+    import db.scenario_models  # Ensure Scenario is registered with Base
     Base.metadata.create_all(bind=engine)

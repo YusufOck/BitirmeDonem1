@@ -30,7 +30,7 @@ _ML_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ML_DIR not in sys.path:
     sys.path.insert(0, _ML_DIR)
 
-from model_classes import RouteDelayPredictor, _PreFitCalibrator, _augment_features, _Log1pRegressor
+from ml.model_classes import RouteDelayPredictor, _PreFitCalibrator, _augment_features, _Log1pRegressor
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 DATA_PATH  = os.path.join(_ML_DIR, "..", "data", "merged_features_v2.csv")

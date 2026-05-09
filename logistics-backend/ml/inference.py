@@ -30,6 +30,12 @@ warnings.filterwarnings("ignore")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _ML_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_ML_DIR)
+
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+if _ML_DIR not in sys.path:
+    sys.path.insert(0, _ML_DIR)
 
 # ── Label encodings (LabelEncoder sorts alphabetically) ──────────────────────
 _ROAD_TYPE_ENC        = {"highway": 0, "mountain": 1, "rural": 2, "urban": 3}
@@ -74,10 +80,6 @@ _DEFAULTS: dict = {
 }
 
 # ── Singleton model loading ───────────────────────────────────────────────────
-# Ensure ml/ is on the path so model_classes is importable regardless of the
-# caller's working directory.
-if _ML_DIR not in sys.path:
-    sys.path.insert(0, _ML_DIR)
 import model_classes  # noqa: E402 — registers _PreFitCalibrator / RouteDelayPredictor
 
 _predictor       = None
@@ -87,22 +89,15 @@ _predictor_fname = None   # tracks which pkl was actually loaded
 def _get_predictor():
     global _predictor, _predictor_fname
     if _predictor is None:
-        for fname in (
-            "route_predictor_v7.pkl",
-            "route_predictor_v6.pkl",
-            "route_predictor_v5.pkl",
-            "route_predictor_v3_hybrid.pkl",
-            "route_predictor_v4.pkl",
-            "route_predictor_v3.pkl",
-        ):
-            pkl = os.path.join(_ML_DIR, fname)
-            if os.path.exists(pkl):
-                _predictor       = joblib.load(pkl)
-                _predictor_fname = fname
-                return _predictor
+        fname = "route_predictor_v9.pkl"
+        pkl = os.path.join(_ML_DIR, fname)
+        if os.path.exists(pkl):
+            _predictor = joblib.load(pkl)
+            _predictor_fname = fname
+            return _predictor
         raise FileNotFoundError(
             f"No model found in {_ML_DIR}.\n"
-            "Run ml/train_model_v5.py to generate the latest model files."
+            "Run ml/train_model_v9.py to generate the latest model files."
         )
     return _predictor
 
@@ -431,7 +426,8 @@ def predict_stop(stop: dict) -> dict:
     prob    = float(predictor.clf.predict_proba(X_clf)[:, 1][0])
     delay   = float(predictor.reg.predict(X_reg)[0])
     p90_reg = getattr(predictor, 'p90_reg', None)
-    p90     = float(p90_reg.predict(X_reg)[0]) if p90_reg is not None else None
+    p90_offset = float(getattr(predictor, "p90_offset", 0.0) or 0.0)
+    p90     = float(p90_reg.predict(X_reg)[0] + p90_offset) if p90_reg is not None else None
 
     risk = ("high"   if prob >= 0.60 else
             "medium" if prob >= 0.35 else "low")
@@ -455,6 +451,8 @@ def get_model_info() -> dict:
     """Return model metadata for health-check / API info endpoints."""
     predictor = _get_predictor()
     version = {
+        "route_predictor_v9.pkl":        "v9",
+        "route_predictor_v8.pkl":        "v8",
         "route_predictor_v7.pkl":        "v7",
         "route_predictor_v6.pkl":        "v6",
         "route_predictor_v5.pkl":        "v5",
@@ -462,6 +460,30 @@ def get_model_info() -> dict:
         "route_predictor_v4.pkl":        "v4",
         "route_predictor_v3.pkl":        "v3",
     }.get(_predictor_fname, "unknown")
+
+    # Fallback metrics — replaced by CSV load below for v8/v9
+    evaluation = {
+        "trained_at": "unknown",
+        "note": "Run train_model_v9.py and reports/generate_evaluation_reports.py to populate metrics.",
+    }
+    if _predictor_fname in {"route_predictor_v8.pkl", "route_predictor_v9.pkl"}:
+        project_root = os.path.dirname(_ML_DIR)
+        metrics_file = "v9_model_metrics.csv" if _predictor_fname == "route_predictor_v9.pkl" else "v8_model_metrics.csv"
+        metrics_path = os.path.join(project_root, "analysis_output", metrics_file)
+        evaluation = {
+            "trained_at": "2026-05-09",
+            "training_note": "Runtime-safe model: no actual_travel_min leakage; encodings match inference.py.",
+            "source": f"analysis_output/{metrics_file}",
+        }
+        if os.path.exists(metrics_path):
+            metrics_df = pd.read_csv(metrics_path)
+            evaluation["metrics"] = {
+                str(row["metric"]): row["value"]
+                for _, row in metrics_df.iterrows()
+            }
+        else:
+            evaluation["metrics_unavailable"] = True
+            evaluation["metrics_error"] = f"Metrics file not found at {metrics_path}. Run training/evaluation scripts to generate it."
 
     return {
         "model_version":        version,
@@ -479,35 +501,7 @@ def get_model_info() -> dict:
             "vehicle_type":          dict(_VEHICLE_TYPE_ENC),
             "road_surface_condition": dict(_ROAD_SURFACE_ENC),
         },
-        "evaluation": {
-            "trained_at": "2026-04-19",
-            "regressor": {
-                "test_mae_min": 1.332,
-                "test_rmse_min": 2.005,
-                "test_r2": 0.9964,
-                "within_2_min": 0.793,
-                "within_5_min": 0.972,
-            },
-            "risk_classifier": {
-                "severe_recall": 0.9942,
-                "severe_precision": 0.9607,
-                "severe_f1": 0.9771,
-                "severity_threshold_min": 24.0,
-            },
-            "p90": {
-                "coverage": 0.741,
-                "target_coverage": 0.90,
-                "pinball_loss": 0.8832,
-                "note": "P90 is useful as a conservative guide, but coverage is below the 90% target.",
-            },
-            "top_features": [
-                {"name": "planned_travel_min", "gain": 785},
-                {"name": "travel_delay_ratio", "gain": 588},
-                {"name": "distance_from_prev_km", "gain": 475},
-                {"name": "cumulative_delay_min", "gain": 363},
-                {"name": "weight_per_package", "gain": 269},
-            ],
-        },
+        "evaluation": evaluation,
     }
 
 

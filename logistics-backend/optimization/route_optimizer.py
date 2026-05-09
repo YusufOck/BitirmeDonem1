@@ -19,9 +19,13 @@ if _PROJECT_ROOT not in sys.path:
 
 from ml.inference import predict_route  # noqa: E402
 
-from optimization.cost_matrix import build_cost_matrix
+from optimization.cost_matrix import build_cost_matrix_with_breakdown
+from optimization.scoring import route_cost_from_sequence, sequence_edges
 from optimization.time_windows import parse_time_windows
 from optimization.vrp_solver import solve_vrp
+from api.logging_config import setup_logger
+
+logger = setup_logger("logistics.route_optimizer")
 
 
 class RouteOptimizer:
@@ -92,7 +96,7 @@ class RouteOptimizer:
         stop_preds: list[dict] = ml_result["stop_predictions"]
 
         # ── Step 2: Build integer cost matrix (N+1 × N+1) ────────────────────
-        cost_matrix = build_cost_matrix(
+        cost_matrix, cost_breakdown = build_cost_matrix_with_breakdown(
             stops_data=stops_prepared,
             ml_predictions=stop_preds,
             use_p90=use_p90,
@@ -176,12 +180,113 @@ class RouteOptimizer:
             "dropped_stop_indices": [i - 1 for i in vrp_result["dropped_nodes"]],
             "cost_mode": "p90" if use_p90 else "expected",
         }
+        comparison = self._build_optimization_comparison(
+            stops_prepared=stops_prepared,
+            vrp_result=vrp_result,
+            cost_matrix=cost_matrix,
+            cost_breakdown=cost_breakdown,
+            num_vehicles=num_vehicles,
+        )
+        route_summary["optimization_status"] = comparison["status"]
+        route_summary["optimization_improvement_pct"] = comparison["improvement_pct"]
 
         return {
             "ml_predictions": ml_result,
             "vrp_result": vrp_result,
             "optimized_route": optimized_route,
             "route_summary": route_summary,
+            "optimization_comparison": comparison,
             "use_p90": use_p90,
             "num_vehicles": num_vehicles,
+        }
+
+    def _build_optimization_comparison(
+        self,
+        stops_prepared: list[dict],
+        vrp_result: dict,
+        cost_matrix: list[list[int]],
+        cost_breakdown: list[list[dict]],
+        num_vehicles: int,
+    ) -> dict:
+        n = len(stops_prepared)
+        original_sequence = [0] + list(range(1, n + 1)) + [0]
+        original_cost = route_cost_from_sequence(cost_matrix, original_sequence)
+        optimized_sequences = vrp_result.get("routes") or []
+        optimized_cost = round(
+            sum(route_cost_from_sequence(cost_matrix, route) for route in optimized_sequences),
+            4,
+        )
+        improvement_min = round(original_cost - optimized_cost, 4)
+        improvement_pct = round((improvement_min / original_cost) * 100.0, 2) if original_cost > 0 else 0.0
+
+        def _name(node: int):
+            stop = stops_prepared[node - 1]
+            return stop.get("stop_id") or stop.get("stop_name") or node
+
+        original_order = [_name(node) for node in original_sequence if node != 0]
+        optimized_order = [
+            [_name(node) for node in route if node != 0]
+            for route in optimized_sequences
+        ]
+
+        warnings: list[str] = []
+        if not optimized_sequences:
+            warnings.append("OR-Tools did not return a feasible route.")
+        if vrp_result.get("dropped_nodes"):
+            warnings.append(f"{len(vrp_result['dropped_nodes'])} stop(s) were dropped by the solver.")
+        if improvement_min <= 0.1:
+            warnings.append("Optimized route is not materially cheaper than the original order.")
+        if num_vehicles > 1:
+            warnings.append("Original-order baseline is sequential; optimized cost may use multiple vehicles.")
+
+        original_edges = set(sequence_edges(original_sequence))
+        changed_edges: list[dict] = []
+        top_cost_drivers: list[dict] = []
+        for route in optimized_sequences:
+            for edge in sequence_edges(route):
+                leg = cost_breakdown[edge[0]][edge[1]]
+                if edge not in original_edges:
+                    changed_edges.append({
+                        "from_node": edge[0],
+                        "to_node": edge[1],
+                        "cost_min": leg.get("total_cost_min"),
+                        "base_travel_min": leg.get("base_travel_min"),
+                        "predicted_delay_min": leg.get("predicted_delay_min"),
+                        "reasons": leg.get("reasons", []),
+                    })
+                if leg.get("reasons"):
+                    top_cost_drivers.append({
+                        "from_node": edge[0],
+                        "to_node": edge[1],
+                        "cost_min": leg.get("total_cost_min"),
+                        "reasons": leg.get("reasons", []),
+                    })
+        top_cost_drivers.sort(key=lambda row: float(row.get("cost_min") or 0.0), reverse=True)
+
+        status = "improved" if improvement_min > 0.1 and not vrp_result.get("dropped_nodes") else "not_improved"
+        if not optimized_sequences:
+            status = "infeasible"
+        confidence = "high"
+        if warnings:
+            confidence = "medium"
+        if status != "improved" or vrp_result.get("dropped_nodes"):
+            confidence = "low"
+
+        return {
+            "status": status,
+            "confidence": confidence,
+            "cost_formula": (
+                "base_travel_time + predicted_delay + traffic_penalty + accident_penalty + "
+                "road_closure_penalty + weather_penalty + risk_penalty + priority_penalty + "
+                "constraint_penalty"
+            ),
+            "original_order": original_order,
+            "optimized_order": optimized_order,
+            "original_cost_min": original_cost,
+            "optimized_cost_min": optimized_cost,
+            "improvement_min": improvement_min,
+            "improvement_pct": improvement_pct,
+            "changed_edges": changed_edges[:12],
+            "top_cost_drivers": top_cost_drivers[:12],
+            "warnings": warnings,
         }

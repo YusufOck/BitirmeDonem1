@@ -1,0 +1,4 @@
+# Route Optimization Rules
+The route optimizer uses OR-Tools to solve the Vehicle Routing Problem (VRP). The objective is to minimize total cost, which is a blend of travel time, projected delay risk, and missed time-window penalties. 
+When traffic density or weather severity increases, the ML delay predictor assigns a higher expected delay to specific stops. The optimizer then penalizes those routes. If alternative stop sequences offer lower overall expected delay (even if travel distance slightly increases), the optimizer will reorder the stops. 
+The optimized route replaces the planned route. The UI visually denotes the new sequence, keeping the original as a dashed baseline for comparison. Alternative candidate routes are evaluated internally by OR-Tools but are NOT shown to the dispatcher to prevent clutter.

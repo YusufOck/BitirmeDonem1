@@ -147,7 +147,8 @@ class RouteDelayPredictor:
                  augment_fn=None,
                  severe_threshold_min=SEVERE_DELAY_THRESHOLD_MIN,
                  reg_feature_cols=None,
-                 p90_reg=None):
+                 p90_reg=None,
+                 p90_offset=0.0):
         self.clf              = clf
         self.reg              = reg
         self.threshold        = threshold
@@ -162,6 +163,7 @@ class RouteDelayPredictor:
         # p90_reg: optional quantile P90 regressor trained with alpha=0.90.
         # Uses the same reg_feature_cols as the main regressor.
         self.p90_reg          = p90_reg
+        self.p90_offset       = p90_offset
 
     def _severity(self, prob: float, delay: float) -> str:
         if delay >= self.severe_threshold:
@@ -254,7 +256,8 @@ class RouteDelayPredictor:
                 cascade_scale = 1.0
             scaled_delay    = round(effective_delay * cascade_scale, 1)
 
-            p90_raw = max(float(p90s[i]), 0.0) if p90s is not None else None
+            p90_offset = float(getattr(self, "p90_offset", 0.0) or 0.0)
+            p90_raw = max(float(p90s[i]) + p90_offset, 0.0) if p90s is not None else None
             p90 = round(p90_raw * cascade_scale, 1) if p90_raw is not None else None
 
             stop_preds.append({

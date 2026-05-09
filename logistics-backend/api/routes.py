@@ -27,6 +27,7 @@ from api.schemas import (
     FullRouteResponse,
     OptimizeRequest,
     OptimizeResponse,
+    SegmentConditionOverride,
     ScenarioImpactFactor,
     ScenarioReoptimizationResponse,
     ScenarioRouteRequest,
@@ -43,6 +44,8 @@ from api.data_pipeline import pipeline
 from api.fleet_store import fleet_store
 from cache.redis_client import set_matrix_cache, set_matrix_index_map, set_route_state, set_stops_cache
 from db.models import Courier, Route, RouteStatus, Stop, StopPool, StopStatus, User, UserRole
+from db.scenario_models import Scenario
+from api.schemas import ScenarioCreateRequest, ScenarioResponse
 
 router = APIRouter(prefix="/api/v1")
 
@@ -296,6 +299,82 @@ def _adjust_travel_matrix_for_scenario(matrix: list[list[float]], controls) -> l
     ]
 
 
+def _segment_override_factor(override: SegmentConditionOverride) -> float:
+    risk_weight = {
+        "low": 0.0,
+        "medium": 0.12,
+        "high": 0.28,
+        "critical": 0.55,
+    }.get(override.risk_level, 0.0)
+    road_weight = {
+        "highway": -0.05,
+        "urban": 0.0,
+        "rural": 0.08,
+        "mountain": 0.18,
+    }.get(override.road_type, 0.0)
+    return max(
+        0.25,
+        1.0
+        + (override.traffic_density / 100.0) * 0.70
+        + (override.accident_severity / 100.0) * 0.85
+        + (override.weather_severity / 100.0) * 0.35
+        + (override.speed_reduction / 100.0) * 0.80
+        + risk_weight
+        + road_weight
+        - ((override.priority - 50) / 100.0) * 0.12,
+    )
+
+
+def _apply_segment_overrides_to_matrix(
+    matrix: list[list[float]],
+    stops: list[dict],
+    overrides: list[SegmentConditionOverride],
+) -> tuple[list[list[float]], list[ScenarioImpactFactor]]:
+    if not overrides:
+        return matrix, []
+
+    stop_index_by_id = {
+        str(stop.get("stop_id")): index
+        for index, stop in enumerate(stops)
+        if stop.get("stop_id") is not None
+    }
+    next_matrix = [list(row) for row in matrix]
+    impacts: list[ScenarioImpactFactor] = []
+
+    for override in overrides:
+        from_index = stop_index_by_id.get(str(override.from_stop_id))
+        to_index = stop_index_by_id.get(str(override.to_stop_id))
+        if from_index is None or to_index is None or from_index == to_index:
+            continue
+
+        if override.road_closure:
+            adjusted = 9999.0
+            severity = "danger"
+            impact_text = "Road closure makes this segment almost impossible unless no alternative exists."
+        else:
+            adjusted = round(
+                next_matrix[from_index][to_index] * _segment_override_factor(override)
+                + override.extra_delay_min,
+                3,
+            )
+            severity = "danger" if override.accident_severity >= 65 or override.speed_reduction >= 70 else (
+                "warning" if override.traffic_density >= 55 or override.extra_delay_min >= 5 else "info"
+            )
+            impact_text = "Manual segment conditions modify the Mapbox travel-time matrix before OR-Tools solves."
+
+        next_matrix[from_index][to_index] = adjusted
+        next_matrix[to_index][from_index] = adjusted
+        impacts.append(ScenarioImpactFactor(
+            label=f"Segment {override.from_stop_id} -> {override.to_stop_id}",
+            before="Mapbox road duration",
+            after="closed" if override.road_closure else f"{adjusted:.1f} min cost",
+            impact=impact_text,
+            severity=severity,
+        ))
+
+    return next_matrix, impacts
+
+
 def _coords_from_route(
     route: list[dict],
     depot_lat: float,
@@ -331,16 +410,22 @@ def _scenario_explanation(
     baseline_metrics: dict,
     scenario_metrics: dict,
     order_changed: bool,
+    segment_override_count: int = 0,
 ) -> str:
     delay_delta = scenario_metrics["expected_delay_min"] - baseline_metrics["expected_delay_min"]
     time_delta = scenario_metrics["duration_min"] - baseline_metrics["duration_min"]
     order_text = "changed the stop order" if order_changed else "kept the same stop order"
+    segment_text = (
+        f" {segment_override_count} manually edited segment penalties were also applied to the route matrix."
+        if segment_override_count
+        else ""
+    )
     return (
         f"The scenario was evaluated with the trained ML delay model, not by a visual shortcut. "
         f"Traffic density {controls.traffic_density}/100, accident severity {controls.accident_severity}/100, "
         f"{controls.weather_condition} weather at {controls.weather_severity}/100 intensity, and road disruption "
         f"{controls.road_disruption}/100 were converted into model features. OR-Tools then {order_text} using "
-        f"the updated ML delay costs and Mapbox road-time matrix. Expected delay changed by {delay_delta:+.1f} min "
+        f"the updated ML delay costs and Mapbox road-time matrix.{segment_text} Expected delay changed by {delay_delta:+.1f} min "
         f"and road duration changed by {time_delta:+.1f} min."
     )
 
@@ -514,6 +599,7 @@ async def full_route(request: OptimizeRequest, db: Session = Depends(get_db)) ->
             vehicle_routes=vehicle_routes,
             optimized_route=optimize_response.optimized_route,
             route_summary=optimize_response.route_summary,
+            optimization_comparison=result.get("optimization_comparison"),
             use_p90=result["use_p90"],
             num_vehicles=result["num_vehicles"],
             explanation=explanation,
@@ -687,6 +773,7 @@ async def auto_dispatch(body: AutoDispatchRequest, db: Session = Depends(get_db)
         vehicle_routes=all_vehicle_routes,
         optimized_route=all_optimized_stops,
         route_summary=combined_summary,
+        optimization_comparison=None,
         use_p90=body.use_p90,
         num_vehicles=len(body.assignments),
     )
@@ -749,6 +836,12 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
             travel_time_matrix,
             body.controls,
         )
+        scenario_matrix, segment_impacts = _apply_segment_overrides_to_matrix(
+            scenario_matrix,
+            scenario_stops,
+            body.segment_overrides,
+        )
+        factor_impacts.extend(segment_impacts)
         scenario_result = await asyncio.to_thread(
             _optimizer.optimize,
             stops_input=scenario_stops,
@@ -830,6 +923,8 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
         baseline_metrics=baseline_metrics,
         scenario_metrics=scenario_metrics,
         delta=delta,
+        baseline_comparison=baseline_result.get("optimization_comparison"),
+        scenario_comparison=scenario_result.get("optimization_comparison"),
         factor_impacts=factor_impacts,
         controls_applied=body.controls,
         order_changed=order_changed,
@@ -840,6 +935,7 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
             baseline_metrics,
             scenario_metrics,
             order_changed,
+            len(body.segment_overrides),
         ),
         mapbox_alternatives=mapbox_alternatives,
     )
@@ -916,3 +1012,205 @@ async def explain_health() -> dict:
         model_ready  : bool — True if configured_model is available
     """
     return check_ollama_health()
+
+
+# ── Scenario Persistence Endpoints ─────────────────────────────────────────────
+
+@router.post("/scenario/create", response_model=ScenarioResponse, tags=["scenario"])
+def create_scenario(req: ScenarioCreateRequest, db: Session = Depends(get_db)):
+    db_scenario = Scenario(
+        name=req.name,
+        controls=req.controls.model_dump(),
+        segment_overrides=[s.model_dump() for s in req.segment_overrides],
+        stops=[s.model_dump() for s in req.stops]
+    )
+    db.add(db_scenario)
+    db.commit()
+    db.refresh(db_scenario)
+    return db_scenario
+
+@router.get("/scenario/list", response_model=list[ScenarioResponse], tags=["scenario"])
+def list_scenarios(db: Session = Depends(get_db)):
+    scenarios = db.query(Scenario).order_by(Scenario.id.desc()).all()
+    result = []
+    for s in scenarios:
+        data = s.__dict__.copy()
+        data["created_at"] = s.created_at.isoformat()
+        data["updated_at"] = s.updated_at.isoformat()
+        result.append(data)
+    return result
+
+@router.get("/scenario/{id}", response_model=ScenarioResponse, tags=["scenario"])
+def get_scenario(id: int, db: Session = Depends(get_db)):
+    scenario = db.query(Scenario).filter(Scenario.id == id).first()
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    data = scenario.__dict__.copy()
+    data["created_at"] = scenario.created_at.isoformat()
+    data["updated_at"] = scenario.updated_at.isoformat()
+    return data
+
+@router.post("/scenario/{id}/update-segment", response_model=ScenarioResponse, tags=["scenario"])
+def update_scenario_segment(id: int, req: SegmentConditionOverride, db: Session = Depends(get_db)):
+    scenario = db.query(Scenario).filter(Scenario.id == id).first()
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    
+    overrides = scenario.segment_overrides.copy() if scenario.segment_overrides else []
+    updated = False
+    for i, s in enumerate(overrides):
+        if s.get("from_stop_id") == req.from_stop_id and s.get("to_stop_id") == req.to_stop_id:
+            overrides[i] = req.model_dump()
+            updated = True
+            break
+    if not updated:
+        overrides.append(req.model_dump())
+        
+    scenario.segment_overrides = overrides
+    db.commit()
+    db.refresh(scenario)
+    data = scenario.__dict__.copy()
+    data["created_at"] = scenario.created_at.isoformat()
+    data["updated_at"] = scenario.updated_at.isoformat()
+    return data
+
+@router.post("/scenario/{id}/optimize", response_model=ScenarioReoptimizationResponse, tags=["scenario"])
+async def optimize_scenario(id: int, db: Session = Depends(get_db)):
+    raise HTTPException(status_code=501, detail="Optimize via ID requires depot coordinates in the model. This workflow is under construction.")
+
+
+# ── Route Lifecycle Endpoints (MVP) ──────────────────────────────────────────
+
+_route_lifecycle_state: dict[int, dict] = {}
+
+def _get_lifecycle_state(route_id: int) -> dict:
+    if route_id not in _route_lifecycle_state:
+        _route_lifecycle_state[route_id] = {
+            "status": "planned",
+            "applied_recommendation": None,
+            "scenario_conditions": None
+        }
+    return _route_lifecycle_state[route_id]
+
+@router.get("/routes/{id}/state", tags=["lifecycle"])
+def get_route_state(id: int):
+    return _get_lifecycle_state(id)
+
+@router.post("/routes/{id}/dispatch/start", tags=["lifecycle"])
+def start_dispatch(id: int):
+    state = _get_lifecycle_state(id)
+    state["status"] = "dispatched"
+    fleet_store.update_status(id, "active")
+    return state
+
+@router.post("/routes/{id}/conditions/update", tags=["lifecycle"])
+def update_conditions(id: int, conditions: dict):
+    state = _get_lifecycle_state(id)
+    state["scenario_conditions"] = conditions
+    # This might trigger recommendation_available in a real system
+    # For MVP, we allow frontend to trigger recalculate
+    return state
+
+@router.post("/routes/{id}/recommendation/recalculate", tags=["lifecycle"])
+def recalculate_recommendation(id: int):
+    state = _get_lifecycle_state(id)
+    state["status"] = "recommendation_available"
+    # Logic to populate new recommendation is normally done here
+    return state
+
+@router.post("/routes/{id}/recommendation/apply", tags=["lifecycle"])
+def apply_recommendation(id: int):
+    state = _get_lifecycle_state(id)
+    state["status"] = "in_progress"
+    state["applied_recommendation"] = True
+    return state
+
+# ── Health and status endpoints ─────────────────────────────────────────────
+
+@router.get("/health", tags=["system"])
+def health_check():
+    return {"status": "ok"}
+
+@router.get("/data/status", tags=["data"])
+def data_status():
+    return {"status": "ok", "pipeline_active": True}
+
+@router.post("/model/evaluate", tags=["ml"])
+def evaluate_model():
+    import subprocess
+    try:
+        subprocess.run(["python", "reports/generate_evaluation_reports.py"], check=True)
+        return {"status": "success", "message": "Evaluation reports generated."}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {e}")
+
+@router.post("/reports/generate-model-graphs", tags=["ml"])
+def generate_graphs():
+    import subprocess
+    try:
+        subprocess.run(["python", "reports/generate_evaluation_reports.py"], check=True)
+        return {"status": "success", "message": "Graphs generated."}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Graph generation failed: {e}")
+
+# ── Agent Endpoint ────────────────────────────────────────────────────────────
+
+class AgentExplainRequest(BaseModel):
+    route_id: int
+    route_state: str
+    scenario_conditions: dict
+    before_metrics: dict
+    after_metrics: dict
+    changed_segments: list = []
+    stop_order_before: list = []
+    stop_order_after: list = []
+    user_question: str = ""
+
+@router.post("/agent/recommendation/explain", tags=["agent"])
+def explain_agent_recommendation(request: AgentExplainRequest):
+    from ai.agent import process_recommendation
+    return process_recommendation(
+        route_id=request.route_id,
+        metrics={"before": request.before_metrics, "after": request.after_metrics},
+        conditions=request.scenario_conditions,
+        stop_order_before=request.stop_order_before,
+        stop_order_after=request.stop_order_after,
+        user_question=request.user_question
+    )
+
+@router.get("/agent/evaluation/summary", tags=["agent"])
+def get_agent_evaluation_summary():
+    import os
+    import pandas as pd
+    
+    project_root = os.path.dirname(os.path.dirname(__file__))
+    summary_path = os.path.join(project_root, "evaluation_results", "rag", "rag_summary_statistics.csv")
+    results_path = os.path.join(project_root, "evaluation_results", "rag", "rag_evaluation_results.csv")
+    
+    if not os.path.exists(summary_path) or not os.path.exists(results_path):
+        return {"status": "unavailable", "reason": "Evaluation has not been run yet."}
+        
+    try:
+        summary_df = pd.read_csv(summary_path)
+        metrics = {str(row.iloc[0]): float(row.iloc[1]) for _, row in summary_df.iterrows()}
+        
+        results_df = pd.read_csv(results_path)
+        hallucination_blocked_count = int((results_df["Hallucination_Pass"] == 0.0).sum())
+        fallback_used_count = int((results_df["Fallback_Used"] == 1).sum())
+        total_questions = len(results_df)
+        
+        return {
+            "status": "available",
+            "metrics": metrics,
+            "hallucination_blocked_count": hallucination_blocked_count,
+            "fallback_used_count": fallback_used_count,
+            "total_questions": total_questions,
+            "file_paths": {
+                "summary_csv": "evaluation_results/rag/rag_summary_statistics.csv",
+                "results_csv": "evaluation_results/rag/rag_evaluation_results.csv",
+                "heatmap_image": "evaluation_results/rag/rag_metric_heatmap.png",
+                "average_scores_image": "evaluation_results/rag/rag_average_scores.png"
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
