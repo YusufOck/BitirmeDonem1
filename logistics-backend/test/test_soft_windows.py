@@ -72,8 +72,8 @@ check("all 3 stops served", res["dropped_nodes"] == [], f"dropped={res['dropped_
 
 print("\n=== 3. solve_vrp — will_miss stop with long travel (core bug fix) ===\n")
 # Stop 1 has will_miss=True, but the minimum travel time is 2000 units (20 min).
-# Old behaviour: hard window (0, 500) → OR-Tools drops stop 1.
-# New behaviour: soft window → stop 1 stays in route.
+# All delivery stops now use soft time windows, so even tight windows
+# will not cause drops.
 
 cost2 = [
     [0,    2000, 1000, 1000],  # depot → stop1 costs 20 min
@@ -85,17 +85,18 @@ cost2 = [
 tw_old = [(0, DEPOT_MAX), (0, 500), (0, 5000), (0, 5000)]  # 500 = 5 min
 flags_miss = [False, True, False, False]
 
-# Simulate old behaviour: hard windows, no soft flags
+# With the soft-window fix, even will_miss_flags=None no longer drops stops
+# because ALL delivery stops have soft time windows.
 res_old = solve_vrp(cost2, tw_old, will_miss_flags=None, time_limit_seconds=5)
 old_dropped = 1 in res_old["dropped_nodes"]
-check("OLD behaviour: stop1 gets dropped with 5-min hard window", old_dropped,
+check("Soft-window fix: stop1 stays even with tight tw (will_miss=None)", not old_dropped,
       f"dropped={res_old['dropped_nodes']}")
 
 # New behaviour: soft windows via will_miss_flags
 tw_new = [(0, DEPOT_MAX), (0, DEPOT_MAX), (0, 5000), (0, 5000)]
 res_new = solve_vrp(cost2, tw_new, will_miss_flags=flags_miss, time_limit_seconds=5)
 new_dropped = 1 in res_new.get("dropped_nodes", [])
-check("NEW behaviour: stop1 stays in route with soft window", not new_dropped,
+check("will_miss stop stays in route with soft window", not new_dropped,
       f"dropped={res_new['dropped_nodes']}")
 
 print("\n=== 4. solve_vrp — will_miss stop scheduled EARLY ===\n")

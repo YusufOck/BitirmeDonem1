@@ -5,7 +5,7 @@
 }
 
 .sidebar {
-  width: 224px;
+  width: 244px;
   display: flex;
   flex-direction: column;
   padding: 1rem;
@@ -53,28 +53,37 @@
 .sidebar-nav {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.35rem;
   flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .nav-link {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.78rem 0.85rem;
+  padding: 0.72rem 0.76rem;
   border-radius: 8px;
   border: 1px solid transparent;
   color: var(--text-secondary);
   text-decoration: none;
-  font-size: 0.92rem;
+  font-size: 0.83rem;
   font-weight: 800;
   transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
 .nav-link svg {
-  width: 19px;
-  height: 19px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
   opacity: 0.75;
+}
+
+.nav-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-link:hover {
@@ -126,7 +135,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  max-width: calc(100vw - 224px);
+  max-width: calc(100vw - 244px);
   height: 100vh;
   overflow: hidden;
 }

@@ -102,12 +102,54 @@ export const completeStopRequest = async (stopId, actualDelayMin = null) => {
   });
 };
 
-export const postSuggestionDecision = async (routeId, suggestionId, action) => {
-  return requestJson(`${API_BASE_URL}/routes/${routeId}/suggestion/${suggestionId}/decision`, {
+export const postSuggestionDecision = async (routeId, decision) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/simulation/decision`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ action }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision }),
   });
+};
+
+// ── Lifecycle MVP API ─────────────────────────────────────────────────────────
+
+export const fetchRouteLifecycleState = async (routeId) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/state`);
+};
+
+export const startDispatchRoute = async (routeId) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/dispatch/start`, { method: 'POST' });
+};
+
+export const updateScenarioConditions = async (routeId, conditions) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/conditions/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(conditions),
+  });
+};
+
+export const recalculateRecommendation = async (routeId) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/recommendation/recalculate`, { method: 'POST' });
+};
+
+export const applyRecommendation = async (routeId) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/recommendation/apply`, { method: 'POST' });
+};
+
+export const resetLifecycle = async (routeId) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/lifecycle/reset`, { method: 'POST' });
+};
+
+// ── Agent / RAG API ───────────────────────────────────────────────────────────
+
+export const fetchAgentExplanation = async (payload) => {
+  return requestJson(`${API_BASE_URL}/agent/recommendation/explain`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+};
+
+export const fetchAgentEvalSummary = async () => {
+  return requestJson(`${API_BASE_URL}/agent/evaluation/summary`);
 };

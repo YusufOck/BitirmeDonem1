@@ -11,6 +11,12 @@ import {
   fetchScenarioReoptimization,
   fetchStopPool,
   postSuggestionDecision,
+  fetchRouteLifecycleState,
+  startDispatchRoute,
+  recalculateRecommendation,
+  applyRecommendation,
+  resetLifecycle,
+  fetchAgentExplanation,
 } from '../services/routeService';
 
 const ROUTE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#aa3bff'];
@@ -24,6 +30,18 @@ const DEFAULT_SCENARIO_CONTROLS = {
   package_load: 60,
   dispatch_hour: 17,
   conservative_mode: false,
+};
+
+const DEFAULT_SEGMENT_OVERRIDE = {
+  traffic_density: 0,
+  accident_severity: 0,
+  road_closure: false,
+  weather_severity: 0,
+  speed_reduction: 0,
+  extra_delay_min: 0,
+  risk_level: 'low',
+  priority: 50,
+  road_type: 'urban',
 };
 
 const round = (value, digits = 1) => {
@@ -88,6 +106,7 @@ const buildOriginalRouteStops = (assignment, stopPoolById, depot) => {
 
 const buildFallbackGeometry = (stops) => ({
   type: 'Feature',
+  isFallback: true,
   geometry: {
     type: 'LineString',
     coordinates: stops.map((stop) => [stop.lon, stop.lat]),
@@ -181,6 +200,29 @@ const normalizeScenarioResult = (result, vehicleId) => ({
   })),
 });
 
+const getControlsForRoute = (state, vehicleId) => {
+  if (vehicleId === null || vehicleId === undefined) return state.scenarioControls || DEFAULT_SCENARIO_CONTROLS;
+  return state.scenarioControlsByVehicleId?.[vehicleId] || state.scenarioControls || DEFAULT_SCENARIO_CONTROLS;
+};
+
+const normalizeSegmentOverrides = (segmentOverrides = {}) => (
+  Object.values(segmentOverrides)
+    .filter((override) => override?.from_stop_id && override?.to_stop_id)
+    .map((override) => ({
+      from_stop_id: String(override.from_stop_id),
+      to_stop_id: String(override.to_stop_id),
+      traffic_density: Number(override.traffic_density || 0),
+      accident_severity: Number(override.accident_severity || 0),
+      road_closure: Boolean(override.road_closure),
+      weather_severity: Number(override.weather_severity || 0),
+      speed_reduction: Number(override.speed_reduction || 0),
+      extra_delay_min: Number(override.extra_delay_min || 0),
+      risk_level: override.risk_level || 'low',
+      priority: Number(override.priority || 50),
+      road_type: override.road_type || 'urban',
+    }))
+);
+
 const hasScenarioForRoute = (scenarioResult, route) => (
   scenarioResult?.vehicleId === route.vehicle_id &&
   getScenarioCoordinates(scenarioResult).length >= 2
@@ -228,6 +270,10 @@ export const useRouteStore = create((set, get) => ({
   selectedCourierId: null,
   pendingSuggestions: {},
   scenarioControls: DEFAULT_SCENARIO_CONTROLS,
+  scenarioControlsByVehicleId: {},
+  scenarioResultsByVehicleId: {},
+  segmentOverridesByVehicleId: {},
+  routeLifecycleByVehicleId: {},
   scenarioResult: null,
   scenarioLoading: false,
   scenarioError: null,
@@ -239,28 +285,93 @@ export const useRouteStore = create((set, get) => ({
   isConnecting: false,
   simulationRouteMode: 'optimized',
 
-  setSelectedCourier: (id) => set((state) => ({
-    selectedCourierId: state.selectedCourierId === id ? null : id,
-  })),
-
-  setScenarioControl: (key, value) => set((state) => ({
-    scenarioControls: {
-      ...state.scenarioControls,
-      [key]: value,
-    },
-    scenarioResult: null,
-    scenarioError: null,
-  })),
-
-  resetScenario: () => set({
-    scenarioControls: DEFAULT_SCENARIO_CONTROLS,
-    scenarioResult: null,
-    scenarioError: null,
+  setSelectedCourier: (id) => set((state) => {
+    const nextId = id;
+    return {
+      selectedCourierId: nextId,
+      scenarioControls: getControlsForRoute(state, nextId),
+      scenarioResult: nextId === null ? null : state.scenarioResultsByVehicleId[nextId] || null,
+    };
   }),
 
-  runScenario: async () => {
+  setScenarioControl: (key, value, vehicleId = null) => set((state) => {
+    const targetVehicleId = vehicleId ?? state.selectedCourierId;
+    const currentControls = getControlsForRoute(state, targetVehicleId);
+    const nextControls = {
+      ...currentControls,
+      [key]: value,
+    };
+    const nextResults = { ...state.scenarioResultsByVehicleId };
+
+    if (targetVehicleId !== null && targetVehicleId !== undefined) {
+      delete nextResults[targetVehicleId];
+    }
+
+    return {
+      scenarioControls: targetVehicleId === state.selectedCourierId || targetVehicleId === null
+        ? nextControls
+        : state.scenarioControls,
+      scenarioControlsByVehicleId: targetVehicleId !== null && targetVehicleId !== undefined
+        ? {
+          ...state.scenarioControlsByVehicleId,
+          [targetVehicleId]: nextControls,
+        }
+        : state.scenarioControlsByVehicleId,
+      scenarioResultsByVehicleId: nextResults,
+      scenarioResult: targetVehicleId === state.selectedCourierId ? null : state.scenarioResult,
+      scenarioError: null,
+    };
+  }),
+
+  setSegmentOverride: (vehicleId, segmentKey, patch) => set((state) => {
+    const currentByRoute = state.segmentOverridesByVehicleId[vehicleId] || {};
+    const currentOverride = currentByRoute[segmentKey] || DEFAULT_SEGMENT_OVERRIDE;
+    const nextResults = { ...state.scenarioResultsByVehicleId };
+    delete nextResults[vehicleId];
+
+    return {
+      segmentOverridesByVehicleId: {
+        ...state.segmentOverridesByVehicleId,
+        [vehicleId]: {
+          ...currentByRoute,
+          [segmentKey]: {
+            ...currentOverride,
+            ...patch,
+          },
+        },
+      },
+      scenarioResultsByVehicleId: nextResults,
+      scenarioResult: vehicleId === state.selectedCourierId ? null : state.scenarioResult,
+      scenarioError: null,
+    };
+  }),
+
+  resetScenario: (vehicleId = null) => set((state) => {
+    const targetVehicleId = vehicleId ?? state.selectedCourierId;
+    const nextResults = { ...state.scenarioResultsByVehicleId };
+    const nextOverrides = { ...state.segmentOverridesByVehicleId };
+    const nextControlsByVehicle = { ...state.scenarioControlsByVehicleId };
+
+    if (targetVehicleId !== null && targetVehicleId !== undefined) {
+      delete nextResults[targetVehicleId];
+      delete nextOverrides[targetVehicleId];
+      nextControlsByVehicle[targetVehicleId] = DEFAULT_SCENARIO_CONTROLS;
+    }
+
+    return {
+      scenarioControls: DEFAULT_SCENARIO_CONTROLS,
+      scenarioControlsByVehicleId: nextControlsByVehicle,
+      scenarioResultsByVehicleId: nextResults,
+      segmentOverridesByVehicleId: nextOverrides,
+      scenarioResult: targetVehicleId === state.selectedCourierId ? null : state.scenarioResult,
+      scenarioError: null,
+    };
+  }),
+
+  runScenario: async (vehicleId = null) => {
     const state = get();
-    const selectedRoute = state.routes.find((route) => route.vehicle_id === state.selectedCourierId) || state.routes[0];
+    const targetVehicleId = vehicleId ?? state.selectedCourierId;
+    const selectedRoute = state.routes.find((route) => route.vehicle_id === targetVehicleId) || state.routes[0];
     if (!selectedRoute || !selectedRoute.stops?.length) {
       set({ scenarioError: 'No route is selected for scenario analysis.' });
       return;
@@ -269,10 +380,15 @@ export const useRouteStore = create((set, get) => ({
     set({ scenarioLoading: true, scenarioError: null });
 
     try {
+      const controls = getControlsForRoute(state, selectedRoute.vehicle_id);
+      const segmentOverrides = normalizeSegmentOverrides(
+        state.segmentOverridesByVehicleId[selectedRoute.vehicle_id] || {},
+      );
       const result = await fetchScenarioReoptimization({
         ...DEFAULT_DEPOT,
         stops: selectedRoute.stops.map(serializeStopForScenario),
-        controls: state.scenarioControls,
+        controls,
+        segment_overrides: segmentOverrides,
         time_limit_seconds: 15,
       });
       const normalizedResult = normalizeScenarioResult(result, selectedRoute.vehicle_id);
@@ -291,7 +407,13 @@ export const useRouteStore = create((set, get) => ({
       }
 
       set({
-        scenarioResult: normalizedResult,
+        scenarioResult: selectedRoute.vehicle_id === get().selectedCourierId
+          ? normalizedResult
+          : get().scenarioResult,
+        scenarioResultsByVehicleId: {
+          ...get().scenarioResultsByVehicleId,
+          [selectedRoute.vehicle_id]: normalizedResult,
+        },
         scenarioLoading: false,
         simulationRouteMode: state.wsConnected ? 'scenario' : state.simulationRouteMode,
       });
@@ -300,6 +422,103 @@ export const useRouteStore = create((set, get) => ({
         scenarioError: error.message,
         scenarioLoading: false,
       });
+    }
+  },
+
+  runAllScenarios: async () => {
+    const routes = get().routes;
+    for (const route of routes) {
+      await get().runScenario(route.vehicle_id);
+    }
+  },
+
+
+
+  // ── Lifecycle Actions (MVP) ────────────────────────────────────────────────
+
+  agentExplanation: null,
+  agentExplanationLoading: false,
+  agentExplanationError: null,
+
+  requestAgentExplanation: async (payload) => {
+    set({ agentExplanationLoading: true, agentExplanationError: null });
+    try {
+      const result = await fetchAgentExplanation(payload);
+      set({ agentExplanation: result, agentExplanationLoading: false });
+      return result;
+    } catch (err) {
+      set({ agentExplanationError: err.message, agentExplanationLoading: false });
+      throw err;
+    }
+  },
+
+  loadLifecycleState: async (routeId) => {
+    try {
+      const stateData = await fetchRouteLifecycleState(routeId);
+      set((state) => ({
+        routeLifecycleByVehicleId: {
+          ...state.routeLifecycleByVehicleId,
+          [routeId]: stateData,
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to load lifecycle state:', err);
+    }
+  },
+
+  startDispatch: async (routeId) => {
+    try {
+      const stateData = await startDispatchRoute(routeId);
+      set((state) => ({
+        routeLifecycleByVehicleId: {
+          ...state.routeLifecycleByVehicleId,
+          [routeId]: stateData,
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to start dispatch:', err);
+    }
+  },
+
+  recalculateLiveRecommendation: async (routeId) => {
+    try {
+      const stateData = await recalculateRecommendation(routeId);
+      set((state) => ({
+        routeLifecycleByVehicleId: {
+          ...state.routeLifecycleByVehicleId,
+          [routeId]: stateData,
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to recalculate recommendation:', err);
+    }
+  },
+
+  applyLiveRecommendation: async (routeId) => {
+    try {
+      const stateData = await applyRecommendation(routeId);
+      set((state) => ({
+        routeLifecycleByVehicleId: {
+          ...state.routeLifecycleByVehicleId,
+          [routeId]: stateData,
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to apply recommendation:', err);
+    }
+  },
+
+  resetRouteLifecycle: async (routeId) => {
+    try {
+      const stateData = await resetLifecycle(routeId);
+      set((state) => ({
+        routeLifecycleByVehicleId: {
+          ...state.routeLifecycleByVehicleId,
+          [routeId]: stateData,
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to reset lifecycle:', err);
     }
   },
 
@@ -433,6 +652,13 @@ export const useRouteStore = create((set, get) => ({
         ...stop,
         courierName: courierNameByVehicleId.get(stop.vehicle_id) || `Courier ${stop.vehicle_id + 1}`,
       }));
+      const scenarioControlsByVehicleId = parsedRoutes.reduce((acc, route) => {
+        acc[route.vehicle_id] = {
+          ...DEFAULT_SCENARIO_CONTROLS,
+          ...(get().scenarioControlsByVehicleId?.[route.vehicle_id] || {}),
+        };
+        return acc;
+      }, {});
 
       set({
         routes: parsedRoutes,
@@ -442,6 +668,13 @@ export const useRouteStore = create((set, get) => ({
         explanation: data.explanation || null,
         modelInfo,
         selectedCourierId: parsedCouriers[0]?.id ?? null,
+        scenarioControls: getControlsForRoute(
+          { scenarioControls: DEFAULT_SCENARIO_CONTROLS, scenarioControlsByVehicleId },
+          parsedCouriers[0]?.id ?? null,
+        ),
+        scenarioControlsByVehicleId,
+        scenarioResultsByVehicleId: {},
+        segmentOverridesByVehicleId: {},
         scenarioResult: null,
         scenarioError: null,
         loading: false,
@@ -453,7 +686,14 @@ export const useRouteStore = create((set, get) => ({
   },
 
   startSimulation: () => {
-    const { routes, _wsRef, isConnecting, wsConnected, scenarioResult } = get();
+    const {
+      routes,
+      _wsRef,
+      isConnecting,
+      wsConnected,
+      scenarioResult,
+      scenarioResultsByVehicleId,
+    } = get();
 
     if (routes.length === 0) return;
     if (isConnecting || wsConnected) return;
@@ -468,15 +708,16 @@ export const useRouteStore = create((set, get) => ({
 
     ws.onopen = () => {
       const vehicles = routes.map((route) => {
-        const usesScenario = hasScenarioForRoute(scenarioResult, route);
+        const routeScenario = scenarioResultsByVehicleId[route.vehicle_id] || scenarioResult;
+        const usesScenario = hasScenarioForRoute(routeScenario, route);
         return {
           courier_id: `courier-${route.vehicle_id}`,
           name: route.courierName,
           vehicle_id: route.vehicle_id,
-          coordinates: getSimulationCoordinates(route, scenarioResult),
+          coordinates: getSimulationCoordinates(route, routeScenario),
           color: usesScenario ? '#22d3ee' : route.color,
           route_source: usesScenario ? 'scenario' : 'optimized',
-          stops: getSimulationStops(route, scenarioResult),
+          stops: getSimulationStops(route, routeScenario),
         };
       });
 

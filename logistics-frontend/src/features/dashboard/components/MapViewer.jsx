@@ -27,9 +27,13 @@ export default function MapViewer({
   pendingSuggestions = {},
   handleSuggestionDecision,
   scenarioResult = null,
+  showAllRoutes = false,
+  showScenario = false,
+  showOriginalRoute = true,
+  showLiveCouriers = false,
 }) {
   const [isProcessing, setIsProcessing] = useState(false);
-  const [showOriginal, setShowOriginal] = useState(true);
+  const [showOriginal, setShowOriginal] = useState(showOriginalRoute);
   const activeSuggestion = selectedCourierId !== null ? pendingSuggestions[selectedCourierId] : null;
 
   const handleAccept = async () => {
@@ -52,11 +56,11 @@ export default function MapViewer({
     }
   };
 
-  const routesToRender = selectedCourierId !== null
+  const routesToRender = selectedCourierId !== null && !showAllRoutes
     ? routes.filter((route) => route.id === `route-${selectedCourierId}` || route.vehicle_id === selectedCourierId)
     : routes;
 
-  const liveCouriersToRender = selectedCourierId !== null
+  const liveCouriersToRender = selectedCourierId !== null && !showAllRoutes
     ? liveCouriers.filter((courier) => courier.vehicle_id === selectedCourierId)
     : liveCouriers;
 
@@ -75,22 +79,22 @@ export default function MapViewer({
           <span className="legend-line legend-line--optimized" />
           <span>Optimized route</span>
         </div>
-        {scenarioResult?.scenarioGeometry && (
+        {showScenario && scenarioResult?.scenarioGeometry && (
           <div>
             <span className="legend-line legend-line--scenario" />
             <span>Scenario route</span>
-          </div>
-        )}
-        {scenarioResult?.mapboxAlternatives?.length > 0 && (
-          <div>
-            <span className="legend-line legend-line--alternative" />
-            <span>Mapbox alternative</span>
           </div>
         )}
         <button onClick={() => setShowOriginal((value) => !value)}>
           {showOriginal ? 'Hide original' : 'Show original'}
         </button>
       </div>
+
+      {(originalRouteToRender?.isFallback || routesToRender?.some(r => r.geometry?.isFallback)) && (
+        <div className="map-proof-controls" style={{ top: '60px', backgroundColor: '#fee2e2', color: '#991b1b', border: '1px solid #f87171' }}>
+          <strong>Road geometry unavailable; fallback straight-line preview shown.</strong>
+        </div>
+      )}
 
       <Map
         initialViewState={{
@@ -129,7 +133,7 @@ export default function MapViewer({
                 'line-color': '#d1d5db',
                 'line-width': 4,
                 'line-opacity': 0.72,
-                'line-dasharray': [1.6, 1.4],
+                'line-dasharray': originalRouteToRender.isFallback ? [2, 4] : [1.6, 1.4],
               }}
             />
           </Source>
@@ -153,6 +157,7 @@ export default function MapViewer({
                   'line-color': routeData.color || '#eb5647',
                   'line-width': selectedCourierId === null ? 5 : 6,
                   'line-opacity': selectedCourierId === null ? 0.78 : 0.92,
+                  'line-dasharray': routeData.geometry?.isFallback ? [2, 4] : undefined,
                 }}
               />
             </Source>
@@ -168,39 +173,17 @@ export default function MapViewer({
                   className={`stop-marker ${Number(stop.expected_delay_min || 0) > 0 ? 'stop-marker--delay' : ''}`}
                   style={{ '--marker-color': routeData.color || '#eb5647' }}
                   title={`${stop.stop_name || 'Stop'} ${Number(stop.expected_delay_min || 0) > 0 ? `(Delay: ${stop.expected_delay_min}m)` : ''}`}
-                />
+                >
+                  {stop.displaySequence || stop.optimized_position + 1 || stopIndex + 1}
+                </div>
               </Marker>
             ))}
           </React.Fragment>
         ))}
 
-        {scenarioResult?.mapboxAlternatives?.map((alternative, index) => (
-          alternative.geometry ? (
-            <Source
-              key={`scenario-alt-${alternative.rank || index}`}
-              id={`scenario-alt-source-${alternative.rank || index}`}
-              type="geojson"
-              data={alternative.geometry}
-            >
-              <Layer
-                id={`scenario-alt-layer-${alternative.rank || index}`}
-                type="line"
-                layout={{
-                  'line-join': 'round',
-                  'line-cap': 'round',
-                }}
-                paint={{
-                  'line-color': '#a78bfa',
-                  'line-width': 4,
-                  'line-opacity': 0.56,
-                  'line-dasharray': [2.4, 1.4],
-                }}
-              />
-            </Source>
-          ) : null
-        ))}
 
-        {scenarioResult?.scenarioGeometry && (
+
+        {showScenario && scenarioResult?.scenarioGeometry && (
           <Source
             id="scenario-route-source"
             type="geojson"
@@ -222,7 +205,7 @@ export default function MapViewer({
           </Source>
         )}
 
-        {liveCouriersToRender
+        {showLiveCouriers && liveCouriersToRender
           .filter((courier) => (
             Array.isArray(courier.location) &&
             typeof courier.location[0] === 'number' && !Number.isNaN(courier.location[0]) &&

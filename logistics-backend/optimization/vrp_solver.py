@@ -15,9 +15,10 @@ import time
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
-# Penalty for dropping an infeasible stop — high enough to avoid dropping
-# unless the problem is truly infeasible for that stop.
-_DROP_PENALTY = 100_000_000
+# Penalty for dropping a stop — must be significantly higher than any
+# feasible arc + soft-penalty combination to prevent stop-dropping.
+# Previous value (100M) was reachable by soft_miss accumulation on distant stops.
+_DROP_PENALTY = 10_000_000_000
 
 # Soft lateness penalty for will_miss stops (per 0.01-min unit of lateness).
 # Soft upper bound is set at 0, so this penalises the full cumulative travel
@@ -153,27 +154,37 @@ def solve_vrp(
     )
     time_dim = model.GetDimensionOrDie("Time")
 
+    # All delivery stops use SOFT time windows to prevent hard infeasibility
+    # drops. The penalty structure incentivises on-time delivery while ensuring
+    # no stop is ever dropped merely because scenario conditions shifted travel
+    # times beyond the original slack window.
     for node_idx in range(n):
         routing_index = manager.NodeToIndex(node_idx)
         tw_open, tw_close = time_windows[node_idx]
 
-        is_soft = (
+        if node_idx == depot:
+            time_dim.CumulVar(routing_index).SetRange(tw_open, tw_close)
+            continue
+
+        is_will_miss = (
             will_miss_flags is not None
             and will_miss_flags[node_idx]
-            and node_idx != depot
         )
 
-        if is_soft:
-            # Unconstrained hard range — stop can never become infeasible due
-            # to timing, so OR-Tools will not auto-drop it.
-            time_dim.CumulVar(routing_index).SetRange(0, 10_000_000)
-            # Soft upper bound at 0: every unit of cumulative travel time to
-            # this node adds `soft_miss_penalty` to the objective.  OR-Tools
-            # minimises total cost, so it naturally schedules these stops as
-            # early in the route as possible.
+        # All delivery stops get an unconstrained hard range so they are
+        # never infeasible.  Soft upper bounds penalise late scheduling.
+        time_dim.CumulVar(routing_index).SetRange(0, 10_000_000)
+
+        if is_will_miss:
+            # Will-miss stops: strong soft penalty from time 0 — schedule ASAP.
             time_dim.SetCumulVarSoftUpperBound(routing_index, 0, soft_miss_penalty)
         else:
-            time_dim.CumulVar(routing_index).SetRange(tw_open, tw_close)
+            # Normal stops: soft penalty kicks in only after exceeding the
+            # original time window close.  Penalty is moderate to prefer
+            # on-time arrival without making the stop droppable.
+            time_dim.SetCumulVarSoftUpperBound(
+                routing_index, tw_close, soft_miss_penalty // 2
+            )
 
     # ── 5. Disjunctions — allow dropping infeasible stops ────────────────────
     #   Each delivery stop becomes its own disjunction with a high penalty.

@@ -1,0 +1,29 @@
+# Environment and secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ML artifacts
+*.pkl
+*.npy
+catboost_info/
+
+# Docker
+docker-compose.override.yml

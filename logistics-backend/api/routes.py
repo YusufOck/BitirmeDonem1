@@ -1125,6 +1125,16 @@ def apply_recommendation(id: int):
     state["applied_recommendation"] = True
     return state
 
+@router.post("/routes/{id}/lifecycle/reset", tags=["lifecycle"])
+def reset_lifecycle(id: int):
+    """Reset route lifecycle to planned state (demo/testing only)."""
+    _route_lifecycle_state[id] = {
+        "status": "planned",
+        "applied_recommendation": None,
+        "scenario_conditions": None
+    }
+    return _route_lifecycle_state[id]
+
 # ── Health and status endpoints ─────────────────────────────────────────────
 
 @router.get("/health", tags=["system"])
