@@ -200,6 +200,8 @@ class OptimizedStop(BaseModel):
     delay_probability: float = Field(..., description="Cascade-adjusted delay probability (0-1)")
     expected_delay_min: float = Field(..., description="P50 expected delay (minutes)")
     delay_p90_min: float | None = Field(None, description="P90 worst-case delay (minutes)")
+    calibration_applied: bool = Field(default=False, description="True when runtime road-condition safety calibration raised delay/risk")
+    calibration_reasons: list[str] = Field(default_factory=list, description="Signals that caused runtime safety calibration")
     will_miss_window: bool
     risk_level: Literal["low", "medium", "high"]
     severity: Literal["on-time", "delayed", "severe"]

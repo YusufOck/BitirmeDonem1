@@ -21,6 +21,103 @@ from sklearn.isotonic import IsotonicRegression
 SEVERE_DELAY_THRESHOLD_MIN = 15.0
 
 
+def _clip01(value):
+    try:
+        if pd.isna(value):
+            return 0.0
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _num(value, default=0.0) -> float:
+    try:
+        if pd.isna(value):
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _condition_floor(row) -> tuple[float, float, list[str]]:
+    """Return a conservative delay/probability floor from runtime road signals.
+
+    The trained regressor can be over-confident on out-of-distribution scenario
+    inputs, especially synthetic combinations such as "snow + accident +
+    gridlock". This floor is not a replacement model; it is a deterministic
+    safety calibration based only on features that are available at inference
+    time and are also used by the optimizer.
+    """
+    planned = max(_num(row.get("planned_travel_min", 0.0), 0.0), 0.0)
+    if planned <= 0:
+        planned = 5.0
+
+    traffic_value = row.get("traffic_level", 3)
+    if isinstance(traffic_value, str):
+        traffic_code = {"heavy": 0, "congested": 0, "moderate": 1, "normal": 2, "low": 3}.get(
+            traffic_value.strip().lower(),
+            3,
+        )
+    else:
+        traffic_code = int(_num(traffic_value, 3))
+
+    weather_value = row.get("weather_condition", 0)
+    if isinstance(weather_value, str):
+        weather_code = {"clear": 0, "cloudy": 1, "fog": 2, "rain": 3, "snow": 4, "wind": 5}.get(
+            weather_value.strip().lower(),
+            0,
+        )
+    else:
+        weather_code = int(_num(weather_value, 0))
+
+    traffic_pressure = {0: 1.0, 1: 0.55, 2: 0.0, 3: 0.0}.get(traffic_code, 0.0)
+    congestion_ratio = row.get("congestion_ratio_mean")
+    if congestion_ratio is not None and not pd.isna(congestion_ratio):
+        traffic_pressure = max(
+            traffic_pressure,
+            _clip01((0.75 - _num(congestion_ratio, 0.75)) / 0.75),
+        )
+
+    weather_pressure = {0: 0.0, 1: 0.0, 2: 0.55, 3: 0.35, 4: 0.85, 5: 0.18}.get(weather_code, 0.0)
+    incident_pressure = max(
+        _clip01(row.get("road_incident", 0)),
+        _clip01(row.get("incident_severity", 0.0)),
+        _clip01(_num(row.get("incident_rate", 0.0), 0.0) * 1.8),
+    )
+    delay_factor_pressure = _clip01((_num(row.get("overall_delay_factor", 1.0), 1.0) - 1.0) / 2.0)
+    slack = _num(row.get("time_window_slack_min", 480.0), 480.0)
+    slack_pressure = _clip01((30.0 - slack) / 30.0)
+    load_pressure = _clip01(_num(row.get("vehicle_load_ratio", 0.0), 0.0) / 1.2)
+
+    combined = (
+        0.45 * traffic_pressure
+        + 0.35 * weather_pressure
+        + 0.60 * incident_pressure
+        + 0.25 * delay_factor_pressure
+        + 0.18 * slack_pressure
+        + 0.10 * load_pressure
+    )
+    if combined < 0.12:
+        return 0.0, 0.0, []
+
+    delay_floor = planned * min(2.5, 0.08 + combined)
+    probability_floor = min(0.98, 0.08 + combined * 0.72)
+
+    reasons = []
+    if traffic_pressure >= 0.3:
+        reasons.append("traffic pressure")
+    if weather_pressure >= 0.3:
+        reasons.append("weather pressure")
+    if incident_pressure >= 0.3:
+        reasons.append("incident pressure")
+    if delay_factor_pressure >= 0.3:
+        reasons.append("scenario delay factor")
+    if slack_pressure >= 0.3:
+        reasons.append("tight time window")
+
+    return float(delay_floor), float(probability_floor), reasons
+
+
 class _Log1pRegressor:
     """Trains on log1p(y); predict returns expm1(pred) — always non-negative."""
 
@@ -220,6 +317,20 @@ class RouteDelayPredictor:
 
         probs  = self.clf.predict_proba(X_clf)[:, 1]
         delays = self.reg.predict(X_reg)
+        condition_calibrations = [
+            _condition_floor(row)
+            for _, row in df.iterrows()
+        ]
+        delay_floors = np.array([item[0] for item in condition_calibrations], dtype=float)
+        probability_floors = np.array([item[1] for item in condition_calibrations], dtype=float)
+
+        # Runtime safety calibration: if explicit road-condition inputs imply
+        # a higher minimum delay/risk than the model predicts, use that floor.
+        # This prevents scenario testing from showing "0 min delay" under
+        # gridlock/accident/snow combinations while still allowing the model to
+        # dominate normal in-distribution cases.
+        delays = np.maximum(delays, delay_floors)
+        probs = np.maximum(probs, probability_floors)
         # getattr: pickles saved before p90_reg was added have no attribute → treat as None
         p90_reg = getattr(self, 'p90_reg', None)
         p90s    = p90_reg.predict(X_reg) if p90_reg is not None else None
@@ -258,8 +369,11 @@ class RouteDelayPredictor:
 
             p90_offset = float(getattr(self, "p90_offset", 0.0) or 0.0)
             p90_raw = max(float(p90s[i]) + p90_offset, 0.0) if p90s is not None else None
+            if p90_raw is not None:
+                p90_raw = max(p90_raw, effective_delay * 1.35)
             p90 = round(p90_raw * cascade_scale, 1) if p90_raw is not None else None
 
+            _, _, calibration_reasons = condition_calibrations[i]
             stop_preds.append({
                 'stop_sequence':         seq,
                 'delay_probability':     round(float(prob_adj), 4),
@@ -269,6 +383,8 @@ class RouteDelayPredictor:
                 'will_miss_window':      bool(prob_adj >= self.threshold),
                 'risk_level':            risk,
                 'severity':              self._severity(prob_adj, scaled_delay),
+                'calibration_applied':   bool(delay_floors[i] > 0 or probability_floors[i] > 0),
+                'calibration_reasons':   calibration_reasons,
             })
 
         # Route-level aggregations — use cascade-scaled values from stop_preds
@@ -304,4 +420,5 @@ class RouteDelayPredictor:
         s      = result['stop_predictions'][0]
         return {k: s[k] for k in (
             'delay_probability', 'expected_delay_min', 'delay_p90_min',
-            'will_miss_window', 'risk_level', 'severity')}
+            'will_miss_window', 'risk_level', 'severity',
+            'calibration_applied', 'calibration_reasons')}

@@ -101,6 +101,31 @@
   box-shadow: 0 0 12px rgba(245, 158, 11, 0.72);
 }
 
+.stop-marker--completed {
+  background: #10b981 !important;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+  font-size: 0.72rem;
+}
+
+.stop-marker--next {
+  background: #3b82f6 !important;
+  box-shadow: 0 0 14px rgba(59, 130, 246, 0.75);
+  transform: scale(1.18);
+  z-index: 10;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.legend-dot--completed {
+  background: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
+}
+
 .courier-marker {
   width: 34px;
   height: 34px;

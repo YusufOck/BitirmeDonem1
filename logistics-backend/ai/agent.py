@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "8"))
 
 def generate_deterministic_explanation(metrics: Dict[str, Any], conditions: Dict[str, Any], order_changed: bool) -> str:
     delay_delta = metrics.get("after", {}).get("expected_delay_min", 0.0) - metrics.get("before", {}).get("expected_delay_min", 0.0)
@@ -47,8 +48,18 @@ def generate_ai_explanation(prompt: str) -> Dict[str, Any]:
         logger.info(f"Calling Ollama at {url} with model {OLLAMA_MODEL}")
         resp = requests.post(
             url,
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.1}},
-            timeout=60  # 60s to handle cold-start model loading
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 60,    # Short output for speed
+                    "num_ctx": 512,       # Minimal context window for CPU speed
+                },
+                "keep_alive": "10m",       # Keep model loaded for 10 min
+            },
+            timeout=OLLAMA_TIMEOUT_SECONDS,
         )
         if resp.status_code == 200:
             result["text"] = resp.json().get("response", "").strip()
@@ -57,7 +68,7 @@ def generate_ai_explanation(prompt: str) -> Dict[str, Any]:
         else:
             result["generation_error"] = f"Ollama returned HTTP {resp.status_code}: {resp.text[:200]}"
     except requests.exceptions.Timeout:
-        result["generation_error"] = f"Ollama request timed out after 30s at {url}"
+        result["generation_error"] = f"Ollama request timed out after {OLLAMA_TIMEOUT_SECONDS:g}s at {url}"
         logger.warning(result["generation_error"])
     except requests.exceptions.ConnectionError as e:
         result["generation_error"] = f"Cannot connect to Ollama at {url}: {e}"
@@ -90,28 +101,16 @@ def process_recommendation(
     retriever_grade = {"pass": False, "score": 0.0, "reason": "No query provided", "relevant_chunks": []}
     
     if user_question:
-        retrieved_context = retrieve_context(user_question, top_k=3)
+        retrieved_context = retrieve_context(user_question, top_k=2)
         retriever_grade = grade_retrieval(user_question, retrieved_context)
     
-    # 3. AI Generation
-    context_text = "\n\n".join([c["content"] for c in retriever_grade.get("relevant_chunks", [])])
+    # 3. AI Generation — keep prompt MINIMAL for CPU-based Ollama performance
+    context_text = "\n".join([c["content"][:200] for c in retriever_grade.get("relevant_chunks", [])[:1]])
     
-    prompt = f"""You are a logistics dispatch assistant. 
-Explain this route change concisely based on the facts provided. Do not hallucinate.
-
-[BACKEND FACTS]
-Delay changed by: {backend_facts['delay_delta_min']:+.1f} min.
-Stop order changed: {order_changed}
-User Scenario Conditions applied: {json.dumps(conditions)}
-
-[KNOWLEDGE BASE CONTEXT]
-{context_text if context_text else 'No specific policy context retrieved.'}
-
-[USER QUESTION]
-{user_question if user_question else 'Explain the routing decision briefly.'}
-
-Answer directly and concisely in 2-4 sentences:
-"""
+    prompt = f"""Explain this logistics route change in 2 sentences.
+Delay: {backend_facts['delay_delta_min']:+.1f}min. Order changed: {order_changed}. Conditions: traffic={conditions.get('traffic_density',0)}, weather={conditions.get('weather_severity',0)}.
+{('Context: ' + context_text) if context_text else ''}
+Answer:"""
     gen_result = generate_ai_explanation(prompt)
     ai_exp = gen_result["text"]
     

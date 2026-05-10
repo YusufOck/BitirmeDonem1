@@ -86,6 +86,33 @@ async def lifespan(app: FastAPI):
     logger.info("Loading data pipeline...")
     pipeline.load()
     logger.info("Data pipeline ready.")
+
+    if os.getenv("OLLAMA_WARMUP_ENABLED", "false").lower() == "true":
+        import requests as _req
+        _ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        _timeout = float(os.getenv("OLLAMA_WARMUP_TIMEOUT_SECONDS", "10"))
+        try:
+            logger.info(f"Pre-warming Ollama model at {_ollama_url}...")
+            _resp = _req.post(
+                f"{_ollama_url}/api/generate",
+                json={
+                    "model": os.getenv("OLLAMA_MODEL", "llama3.2"),
+                    "prompt": "OK",
+                    "stream": False,
+                    "options": {"num_predict": 1},
+                    "keep_alive": "10m",
+                },
+                timeout=_timeout,
+            )
+            if _resp.status_code == 200:
+                logger.info("Ollama model pre-warmed successfully.")
+            else:
+                logger.warning(f"Ollama warm-up returned {_resp.status_code}")
+        except Exception as _e:
+            logger.warning(f"Ollama warm-up failed (non-critical): {_e}")
+    else:
+        logger.info("Ollama warm-up skipped. Deterministic explanations remain available.")
+
     yield
 
 

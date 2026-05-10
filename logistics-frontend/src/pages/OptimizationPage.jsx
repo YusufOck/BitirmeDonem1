@@ -13,7 +13,7 @@ export default function OptimizationPage() {
   const {
     loading, error, fetchData, forceFetchData,
     routes, selectedCourierId,
-    scenarioResult, scenarioLoading, scenarioError,
+    scenarioResult, scenarioResultsByVehicleId, scenarioLoading, scenarioError,
     runScenario, liveCouriers, pendingSuggestions, handleSuggestionDecision,
     routeLifecycleByVehicleId, loadLifecycleState, startDispatch,
     feedbackMessage, feedbackType, clearFeedback,
@@ -26,9 +26,13 @@ export default function OptimizationPage() {
 
   const liveCourierArray = useMemo(() => Object.values(liveCouriers || {}), [liveCouriers]);
   const selectedRoute = routes.find((r) => r.vehicle_id === selectedCourierId) || routes[0] || null;
+  const activeScenarioResult = selectedRoute
+    ? scenarioResultsByVehicleId[selectedRoute.vehicle_id]
+      || (scenarioResult?.vehicleId === selectedRoute.vehicle_id ? scenarioResult : null)
+    : null;
   const currentLifecycle = selectedRoute ? routeLifecycleByVehicleId[selectedRoute.vehicle_id]?.status || 'planned' : 'planned';
   const isDispatched = currentLifecycle === 'dispatched' || currentLifecycle === 'in_progress';
-  const hasOptimizationResult = Boolean(scenarioResult?.scenario_route?.length);
+  const hasOptimizationResult = Boolean(activeScenarioResult?.scenario_route?.length);
 
   const handleRunOptimization = async () => {
     if (!selectedRoute) return;
@@ -42,8 +46,8 @@ export default function OptimizationPage() {
   };
 
   const plannedStops = selectedRoute?.stops || [];
-  const optimizedStops = scenarioResult?.scenario_route || [];
-  const baselineStops = scenarioResult?.baseline_route || plannedStops;
+  const optimizedStops = activeScenarioResult?.scenario_route || [];
+  const baselineStops = activeScenarioResult?.baseline_route || plannedStops;
 
   // Validation
   const optimizedValid = !hasOptimizationResult || (() => {
@@ -149,18 +153,19 @@ export default function OptimizationPage() {
                   liveCouriers={liveCourierArray}
                   pendingSuggestions={pendingSuggestions}
                   handleSuggestionDecision={handleSuggestionDecision}
-                  scenarioResult={scenarioResult}
+                  scenarioResult={activeScenarioResult}
                   showScenario={false}
                   showAlternatives={false}
                   showLiveCouriers={false}
+                  legendContext="planner"
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                <RouteMetricGrid route={selectedRoute} scenarioResult={scenarioResult} />
+                <RouteMetricGrid route={selectedRoute} scenarioResult={activeScenarioResult} />
                 <EvidencePanel
                   stops={hasOptimizationResult ? optimizedStops : plannedStops}
-                  explanation={scenarioResult?.explanation || null}
-                  explanationWarning={scenarioResult?.should_answer === false || scenarioResult?.hallucination_risk === 'high'}
+                  explanation={activeScenarioResult?.explanation || null}
+                  explanationWarning={activeScenarioResult?.should_answer === false || activeScenarioResult?.hallucination_risk === 'high'}
                 />
               </div>
             </div>
@@ -170,7 +175,7 @@ export default function OptimizationPage() {
           <section className="page-card page-card--wide">
             <span className="panel-kicker">Stop order comparison</span>
             <h2>Planned vs Optimized stop order</h2>
-            <RouteOrderComparison baseline={baselineStops} scenario={scenarioResult} />
+            <RouteOrderComparison baseline={baselineStops} scenario={activeScenarioResult} />
           </section>
 
           {/* Stop details table */}

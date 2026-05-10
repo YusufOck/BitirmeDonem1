@@ -152,7 +152,10 @@ export function RouteValidationBanner({ plannedStops, resultStops, label = 'Opti
 // ── Route Order Comparison ───────────────────────────────────────────────────
 
 export function RouteOrderComparison({ baseline, scenario }) {
-  const before = scenario?.baseline_route || baseline || [];
+  // Always use the baseline prop (remainingStops from parent) as the "before" source.
+  // Do NOT use scenario?.baseline_route which comes from the backend and may include
+  // a different stop count than the current remaining stops.
+  const before = baseline || [];
   // Fix: scenario_route may be an array; do NOT fallback to scenario object
   const after = Array.isArray(scenario?.scenario_route) ? scenario.scenario_route : [];
   const hasResult = after.length > 0;
@@ -317,16 +320,17 @@ export function AgentExplanationPanel({ explanation, loading, error }) {
 
   if (loading) {
     return (
-      <div style={{ padding: '1rem', backgroundColor: '#f3f4f6', borderRadius: '6px', textAlign: 'center', color: '#6b7280' }}>
-        Generating explanation...
+      <div style={{ padding: '1rem', backgroundColor: '#eff6ff', borderRadius: '6px', border: '1px solid #bfdbfe', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+        <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', backgroundColor: '#3b82f6', animation: 'pulse 1.5s infinite' }} />
+        <span style={{ color: '#1e40af', fontSize: '0.85rem' }}>Generating AI explanation via Ollama LLM…</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="inline-error" style={{ marginBottom: '0.6rem' }}>
-        Explanation request failed: {error}
+      <div style={{ padding: '0.6rem 0.8rem', backgroundColor: '#fef3c7', borderRadius: '6px', border: '1px solid #fbbf24', fontSize: '0.8rem', color: '#92400e' }}>
+        <strong>AI explanation unavailable:</strong> {error}
       </div>
     );
   }

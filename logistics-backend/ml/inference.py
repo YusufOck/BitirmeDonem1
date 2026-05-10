@@ -418,32 +418,19 @@ def predict_stop(stop: dict) -> dict:
     """
     predictor = _get_predictor()
     df = _prepare_dataframe([stop])
-    if predictor.augment_fn is not None and "delay_to_slack_ratio" not in df.columns:
-        df = predictor.augment_fn(df)
-    X_clf = df[predictor.feature_cols]
-    X_reg = df[predictor.reg_feature_cols]
-
-    prob    = float(predictor.clf.predict_proba(X_clf)[:, 1][0])
-    delay   = float(predictor.reg.predict(X_reg)[0])
-    p90_reg = getattr(predictor, 'p90_reg', None)
-    p90_offset = float(getattr(predictor, "p90_offset", 0.0) or 0.0)
-    p90     = float(p90_reg.predict(X_reg)[0] + p90_offset) if p90_reg is not None else None
-
-    risk = ("high"   if prob >= 0.60 else
-            "medium" if prob >= 0.35 else "low")
-
-    def _severity(p, d):
-        if d >= predictor.severe_threshold: return "severe"
-        if p >= predictor.threshold:        return "delayed"
-        return "on-time"
-
+    # Use the same route-level wrapper as predict_route so single-stop calls get
+    # cascade-safe formatting and runtime condition calibration too.
+    result = predictor.predict_route(df)
+    item = result["stop_predictions"][0]
     return {
-        "delay_probability":  round(prob, 4),
-        "expected_delay_min": round(delay, 1),
-        "delay_p90_min":      round(p90, 1) if p90 is not None else None,
-        "will_miss_window":   bool(prob >= predictor.threshold),
-        "risk_level":         risk,
-        "severity":           _severity(prob, delay),
+        "delay_probability": item["delay_probability"],
+        "expected_delay_min": item["expected_delay_min"],
+        "delay_p90_min": item.get("delay_p90_min"),
+        "will_miss_window": item["will_miss_window"],
+        "risk_level": item["risk_level"],
+        "severity": item["severity"],
+        "calibration_applied": item.get("calibration_applied", False),
+        "calibration_reasons": item.get("calibration_reasons", []),
     }
 
 

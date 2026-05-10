@@ -102,11 +102,11 @@ export const completeStopRequest = async (stopId, actualDelayMin = null) => {
   });
 };
 
-export const postSuggestionDecision = async (routeId, decision) => {
-  return requestJson(`${API_BASE_URL}/routes/${routeId}/simulation/decision`, {
+export const postSuggestionDecision = async (routeId, suggestionId, action) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/suggestion/${suggestionId}/decision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ action }),
   });
 };
 
@@ -132,8 +132,12 @@ export const recalculateRecommendation = async (routeId) => {
   return requestJson(`${API_BASE_URL}/routes/${routeId}/recommendation/recalculate`, { method: 'POST' });
 };
 
-export const applyRecommendation = async (routeId) => {
-  return requestJson(`${API_BASE_URL}/routes/${routeId}/recommendation/apply`, { method: 'POST' });
+export const applyRecommendation = async (routeId, payload = null) => {
+  return requestJson(`${API_BASE_URL}/routes/${routeId}/recommendation/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
 };
 
 export const resetLifecycle = async (routeId) => {
@@ -143,11 +147,24 @@ export const resetLifecycle = async (routeId) => {
 // ── Agent / RAG API ───────────────────────────────────────────────────────────
 
 export const fetchAgentExplanation = async (payload) => {
-  return requestJson(`${API_BASE_URL}/agent/recommendation/explain`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120_000); // 120s timeout
+  try {
+    const result = await requestJson(`${API_BASE_URL}/agent/recommendation/explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return result;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error('AI explanation request timed out (120s).');
+    }
+    throw err;
+  }
 };
 
 export const fetchAgentEvalSummary = async () => {

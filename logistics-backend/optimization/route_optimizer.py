@@ -160,6 +160,8 @@ class RouteOptimizer:
                     "delay_probability": ml_pred["delay_probability"],
                     "expected_delay_min": ml_pred["expected_delay_min"],
                     "delay_p90_min": ml_pred.get("delay_p90_min"),
+                    "calibration_applied": ml_pred.get("calibration_applied", False),
+                    "calibration_reasons": ml_pred.get("calibration_reasons", []),
                     "will_miss_window": ml_pred["will_miss_window"],
                     "risk_level": ml_pred["risk_level"],
                     "severity": ml_pred["severity"],

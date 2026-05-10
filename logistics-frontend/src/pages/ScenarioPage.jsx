@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useCallback } from 'react';
 import MapViewer from '../features/dashboard/components/MapViewer';
 import { useRouteStore } from '../store/useRouteStore';
 import {
@@ -18,8 +18,7 @@ const SCENARIO_SLIDERS = [
 
 const WEATHER_OPTIONS = ['clear', 'cloudy', 'wind', 'fog', 'rain', 'snow'];
 
-function buildSegments(route, overrides = {}) {
-  const stops = route?.stops || [];
+function buildSegments(stops, overrides = {}) {
   return stops.slice(0, -1).map((stop, index) => {
     const nextStop = stops[index + 1];
     const segKey = `${stop.stop_id || index}-${nextStop.stop_id || index + 1}`;
@@ -30,15 +29,9 @@ function buildSegments(route, overrides = {}) {
       override: {
         from_stop_id: String(stop.stop_id || index),
         to_stop_id: String(nextStop.stop_id || index + 1),
-        traffic_density: 0,
-        accident_severity: 0,
-        road_closure: false,
-        weather_severity: 0,
-        speed_reduction: 0,
-        extra_delay_min: 0,
-        risk_level: 'low',
-        priority: 50,
-        road_type: nextStop.road_type || 'urban',
+        traffic_density: 0, accident_severity: 0, road_closure: false,
+        weather_severity: 0, speed_reduction: 0, extra_delay_min: 0,
+        risk_level: 'low', priority: 50, road_type: nextStop.road_type || 'urban',
         ...(overrides[segKey] || {}),
       },
     };
@@ -59,6 +52,7 @@ export default function ScenarioPage() {
     requestAgentExplanation, applyLiveRecommendation,
     feedbackMessage, feedbackType, clearFeedback,
     simulationRunning, startSimulation,
+    completedStopIdsByVehicle, completedStopVersion,
   } = useRouteStore();
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -71,27 +65,54 @@ export default function ScenarioPage() {
   const currentLifecycle = selectedRoute ? routeLifecycleByVehicleId[selectedRoute.vehicle_id]?.status || 'planned' : 'planned';
   const isActive = currentLifecycle === 'dispatched' || currentLifecycle === 'in_progress';
 
-  const activeControls = selectedRoute
-    ? scenarioControlsByVehicleId[selectedRoute.vehicle_id] || scenarioControls
-    : scenarioControls;
-  const activeOverrides = selectedRoute
-    ? segmentOverridesByVehicleId[selectedRoute.vehicle_id] || {}
-    : {};
+  // Single source of truth: completedStopIdsByVehicle — version triggers re-render
+  const completedStopIds = useMemo(
+    () => (selectedRoute ? completedStopIdsByVehicle[selectedRoute.vehicle_id] || new Set() : new Set()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedRoute, completedStopIdsByVehicle, completedStopVersion]
+  );
+
+  const allStops = useMemo(() => selectedRoute?.stops || [], [selectedRoute?.stops]);
+  const completedStops = useMemo(() => allStops.filter((s) => completedStopIds.has(String(s.stop_id))), [allStops, completedStopIds]);
+  const remainingStops = useMemo(() => allStops.filter((s) => !completedStopIds.has(String(s.stop_id))), [allStops, completedStopIds]);
+  const totalStopCount = completedStopIds.size + remainingStops.length;
+  const nextStop = remainingStops[0] || null;
+  const allRouteCompleted = isActive && remainingStops.length === 0 && completedStopIds.size > 0;
+
+  const activeControls = useMemo(
+    () => (selectedRoute ? scenarioControlsByVehicleId[selectedRoute.vehicle_id] || scenarioControls : scenarioControls),
+    [selectedRoute, scenarioControlsByVehicleId, scenarioControls]
+  );
+  const activeOverrides = useMemo(
+    () => (selectedRoute ? segmentOverridesByVehicleId[selectedRoute.vehicle_id] || {} : {}),
+    [selectedRoute, segmentOverridesByVehicleId]
+  );
   const activeScenarioResult = selectedRoute
-    ? scenarioResultsByVehicleId[selectedRoute.vehicle_id] || scenarioResult
+    ? scenarioResultsByVehicleId[selectedRoute.vehicle_id]
+      || (scenarioResult?.vehicleId === selectedRoute.vehicle_id ? scenarioResult : null)
     : scenarioResult;
 
   const hasRecommendation = Boolean(activeScenarioResult?.scenario_route?.length);
-  const segments = selectedRoute ? buildSegments(selectedRoute, activeOverrides) : [];
-  const routeList = routes.map((r) => ({
-    id: r.vehicle_id,
-    initials: `C${r.vehicle_id}`,
-    name: r.courierName,
-    color: r.color,
-    status: r.metrics?.highRiskStops > 0 ? 'Needs Review' : 'On Track',
-    stopCount: r.metrics?.stopCount || 0,
-    totalDelay: r.metrics?.expectedDelayMin || 0,
-  }));
+
+  // Segments based on remaining stops ONLY — hidden when all completed
+  const segments = useMemo(
+    () => (remainingStops.length >= 2 ? buildSegments(remainingStops, activeOverrides) : []),
+    [remainingStops, activeOverrides]
+  );
+
+  const routeList = routes.map((r) => {
+    const cIds = completedStopIdsByVehicle[r.vehicle_id] || new Set();
+    return {
+      id: r.vehicle_id,
+      initials: `C${r.vehicle_id}`,
+      name: r.courierName,
+      color: r.color,
+      status: r.metrics?.highRiskStops > 0 ? 'Needs Review' : 'On Track',
+      stopCount: r.stops?.length || 0,
+      totalDelay: r.metrics?.expectedDelayMin || 0,
+      progress: cIds.size > 0 ? `${cIds.size}/${r.stops?.length || 0}` : null,
+    };
+  });
 
   const handleControlChange = (key, value) => {
     setScenarioControl(key, value, selectedRoute?.vehicle_id ?? null);
@@ -102,28 +123,27 @@ export default function ScenarioPage() {
     setSegmentOverride(selectedRoute.vehicle_id, segmentKey, patch);
   };
 
-  const handleRecalculate = async () => {
+  const handleRecalculate = useCallback(async () => {
     if (!selectedRoute) return;
     await runScenario(selectedRoute.vehicle_id);
 
+    // Request AI explanation asynchronously — do NOT block recommendation display
     const sr = useRouteStore.getState().scenarioResultsByVehicleId[selectedRoute.vehicle_id]
       || useRouteStore.getState().scenarioResult;
 
     if (sr) {
-      const beforeStops = sr.baseline_route || selectedRoute.stops || [];
-      const afterStops = sr.scenario_route || selectedRoute.stops || [];
       requestAgentExplanation({
         route_id: selectedRoute.vehicle_id,
         route_state: currentLifecycle,
         scenario_conditions: activeControls,
         before_metrics: { expected_delay_min: selectedRoute.metrics?.expectedDelayMin || 0 },
         after_metrics: { expected_delay_min: (selectedRoute.metrics?.expectedDelayMin || 0) + (sr.delta?.expected_delay_min || 0) },
-        stop_order_before: beforeStops.map((s) => s.stop_name || s.stop_id || ''),
-        stop_order_after: afterStops.map((s) => s.stop_name || s.stop_id || ''),
+        stop_order_before: remainingStops.map((s) => s.stop_name || s.stop_id || ''),
+        stop_order_after: (sr.scenario_route || []).map((s) => s.stop_name || s.stop_id || ''),
         user_question: 'Why was the route changed?',
-      });
+      }).catch(() => { /* AI explanation is supplementary */ });
     }
-  };
+  }, [selectedRoute, currentLifecycle, activeControls, remainingStops, runScenario, requestAgentExplanation]);
 
   const handleApplyRecommendation = async () => {
     if (!selectedRoute) return;
@@ -136,24 +156,23 @@ export default function ScenarioPage() {
     useRouteStore.getState().setFeedback('Recommendation rejected. Courier continues on current route.', 'info');
   };
 
-  const handleStartSim = () => {
-    startSimulation();
-  };
-
   if (loading) return <LoadingState text="Loading route data" />;
   if (error) return <ErrorState message={error} onRetry={forceFetchData} />;
-  if (!selectedRoute) return <ErrorState message="No route available. Run a dispatch first." onRetry={forceFetchData} />;
+  if (!selectedRoute) return <ErrorState message="No route available." onRetry={forceFetchData} />;
 
-  const plannedStops = selectedRoute.stops || [];
-  const baselineStops = activeScenarioResult?.baseline_route || plannedStops;
   const recommendedStops = activeScenarioResult?.scenario_route || [];
 
-  // Validation for recommended route
+  // Strict validation: recommendation must contain exactly the remaining stops
   const recommendationValid = !hasRecommendation || (() => {
-    const pIds = new Set(plannedStops.map((s) => s.stop_id || s.stop_name).filter(Boolean));
-    const rIds = new Set(recommendedStops.map((s) => s.stop_id || s.stop_name).filter(Boolean));
-    return pIds.size === rIds.size && [...pIds].every((id) => rIds.has(id));
+    const rIds = new Set(remainingStops.map((s) => String(s.stop_id)).filter(Boolean));
+    const sIds = new Set(recommendedStops.map((s) => String(s.stop_id || s.stop_name)).filter(Boolean));
+    // Check both directions: no missing AND no unexpected stops
+    const allPresent = [...rIds].every((id) => sIds.has(id));
+    const noExtra = [...sIds].every((id) => rIds.has(id));
+    return allPresent && noExtra && rIds.size === sIds.size;
   })();
+  const validationMissing = hasRecommendation ? remainingStops.filter((s) => !new Set(recommendedStops.map((r) => String(r.stop_id || r.stop_name))).has(String(s.stop_id))) : [];
+  const validationExtra = hasRecommendation ? recommendedStops.filter((s) => !new Set(remainingStops.map((r) => String(r.stop_id))).has(String(s.stop_id || s.stop_name))) : [];
 
   return (
     <div className="dashboard-container">
@@ -161,25 +180,18 @@ export default function ScenarioPage() {
         <PageHeader
           eyebrow="Live monitor · After dispatch"
           title="Live Monitor & Recommendations"
-          subtitle="Monitor courier progress, apply conditions, and get AI-grounded recommendations."
+          subtitle={isActive
+            ? `Tracking ${selectedRoute.courierName}. ${completedStopIds.size}/${totalStopCount} stops completed.`
+            : 'Dispatch a route first to begin live monitoring.'}
         >
           <div className="header-metrics">
             <MetricCard label="Route" value={selectedRoute.courierName} />
-            <MetricCard label="Stops" value={selectedRoute.metrics?.stopCount || 0} />
-            <MetricCard
-              label="Status"
-              value={isActive ? 'In Progress' : currentLifecycle}
-              tone={isActive ? 'success' : 'warning'}
-            />
-            <MetricCard
-              label="Tracking"
-              value={simulationRunning ? 'Live' : 'Stopped'}
-              tone={simulationRunning ? 'success' : 'neutral'}
-            />
+            <MetricCard label="Progress" value={`${completedStopIds.size}/${totalStopCount}`} tone={completedStopIds.size > 0 ? 'success' : 'neutral'} />
+            <MetricCard label="Remaining" value={remainingStops.length} />
+            <MetricCard label="Tracking" value={simulationRunning ? 'Live' : 'Stopped'} tone={simulationRunning ? 'success' : 'neutral'} />
           </div>
         </PageHeader>
 
-        {/* Feedback banner */}
         {feedbackMessage && (
           <div className={`feedback-banner feedback-banner--${feedbackType}`}>
             <span>{feedbackMessage}</span>
@@ -189,20 +201,63 @@ export default function ScenarioPage() {
 
         {scenarioError ? <div className="inline-error">{scenarioError}</div> : null}
 
-        {/* Simulation status */}
         {isActive && !simulationRunning && (
           <div className="info-banner info-banner--amber">
-            Courier is dispatched but live tracking is not running.
-            <button className="control-btn control-btn--primary" style={{ marginLeft: 'auto', padding: '0.4rem 0.8rem' }} onClick={handleStartSim}>
-              Start Live Tracking
-            </button>
+            Courier dispatched but live tracking not running.
+            <button className="control-btn control-btn--primary" style={{ marginLeft: 'auto', padding: '0.4rem 0.8rem' }} onClick={() => startSimulation()}>Start Live Tracking</button>
+          </div>
+        )}
+        {simulationRunning && (
+          <div className="info-banner info-banner--green">
+            <span className="live-dot" style={{ marginRight: '0.5rem' }} /> Courier is live. Stops marked as visited automatically.
           </div>
         )}
 
-        {simulationRunning && (
-          <div className="info-banner info-banner--green">
-            <span className="live-dot" style={{ marginRight: '0.5rem' }} /> Courier simulation is running on the active route.
-          </div>
+        {/* Courier progress panel */}
+        {isActive && (
+          <section className="page-card">
+            <div className="courier-progress-row">
+              <div className="progress-col">
+                <span className="panel-kicker">Courier progress</span>
+                <div className="progress-bar-container" style={{ marginTop: '0.4rem' }}>
+                  <div className="progress-bar-fill" style={{ width: totalStopCount > 0 ? `${(completedStopIds.size / totalStopCount) * 100}%` : '0%' }} />
+                </div>
+                <span className="progress-text">{completedStopIds.size} / {totalStopCount} stops visited</span>
+              </div>
+
+              {nextStop && (
+                <div className="next-stop-card">
+                  <span className="panel-kicker">Next stop</span>
+                  <strong>{nextStop.displaySequence || ''}. {nextStop.stop_name || nextStop.stop_id}</strong>
+                </div>
+              )}
+
+              <div className="stops-lists-row">
+                {completedStops.length > 0 && (
+                  <div className="stops-list-mini">
+                    <span className="panel-kicker" style={{ color: '#10b981' }}>Completed ({completedStopIds.size})</span>
+                    {completedStops.map((s, i) => (
+                      <span key={s.stop_id} className="stop-chip stop-chip--completed">✓ {i + 1} — {s.stop_id} — Completed</span>
+                    ))}
+                  </div>
+                )}
+                {allRouteCompleted ? (
+                  <div className="stops-list-mini">
+                    <span className="panel-kicker" style={{ color: '#10b981' }}>All stops delivered</span>
+                  </div>
+                ) : (
+                  <div className="stops-list-mini">
+                    <span className="panel-kicker">Remaining ({remainingStops.length})</span>
+                    {remainingStops.map((s, i) => (
+                      <span key={s.stop_id} className={`stop-chip ${i === 0 ? 'stop-chip--next' : ''}`}>
+                        {completedStops.length + i + 1} — {s.stop_id} — {i === 0 ? 'Next' : 'Pending'}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
         )}
 
         <div className="page-grid page-grid--scenario">
@@ -219,14 +274,13 @@ export default function ScenarioPage() {
               </div>
 
               <div className="info-banner info-banner--blue" style={{ marginTop: '0.5rem', marginBottom: '0.8rem', fontSize: '0.78rem' }}>
-                <strong>How conditions work:</strong> Global conditions affect the full route. Segment overrides (right panel) affect only selected road sections and <strong>take priority</strong>.
+                <strong>How conditions work:</strong> Global conditions affect the full route. Segment overrides affect only selected remaining road sections and <strong>take priority</strong>.
               </div>
 
               <div className="condition-controls">
                 <label className="field-card">
                   <span>Weather type</span>
-                  <select value={activeControls?.weather_condition || 'clear'}
-                    onChange={(e) => handleControlChange('weather_condition', e.target.value)}>
+                  <select value={activeControls?.weather_condition || 'clear'} onChange={(e) => handleControlChange('weather_condition', e.target.value)}>
                     {WEATHER_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
                   </select>
                 </label>
@@ -244,19 +298,19 @@ export default function ScenarioPage() {
                 })}
 
                 <label className="toggle-card">
-                  <input type="checkbox" checked={Boolean(activeControls?.conservative_mode)}
-                    onChange={(e) => handleControlChange('conservative_mode', e.target.checked)} />
-                  <span>
-                    <strong>Conservative mode</strong>
-                    <small>Use worst-case (P90) delay estimates.</small>
-                  </span>
+                  <input type="checkbox" checked={Boolean(activeControls?.conservative_mode)} onChange={(e) => handleControlChange('conservative_mode', e.target.checked)} />
+                  <span><strong>Conservative mode</strong><small>Use worst-case (P90) delay estimates.</small></span>
                 </label>
               </div>
             </div>
 
             <button className="control-btn control-btn--primary control-btn--full"
-              onClick={handleRecalculate} disabled={scenarioLoading}>
-              {scenarioLoading ? 'Recalculating...' : 'Recalculate Live Recommendation'}
+              onClick={handleRecalculate} disabled={scenarioLoading || allRouteCompleted}>
+              {allRouteCompleted
+                ? 'All stops completed'
+                : scenarioLoading
+                  ? 'Recalculating...'
+                  : `Recalculate for ${remainingStops.length} remaining stops`}
             </button>
           </section>
 
@@ -265,25 +319,15 @@ export default function ScenarioPage() {
             <div className="section-title-row">
               <div>
                 <span className="panel-kicker">{hasRecommendation ? 'Active vs Recommended Route' : 'Active Dispatch Route'}</span>
-                <h2>{hasRecommendation ? 'Recommendation comparison' : 'Current route'}</h2>
+                <h2>{hasRecommendation ? `Recommendation: ${recommendedStops.length} remaining stops` : selectedRoute.courierName}</h2>
               </div>
-              {simulationRunning && (
-                <span className="live-pill live-pill--on"><span className="live-dot" /> Live</span>
-              )}
-            </div>
-
-            {/* Legend */}
-            <div className="route-legend">
-              <span><span className="legend-swatch legend-swatch--primary" />{hasRecommendation ? 'Recommended Route' : 'Active Dispatch Route'}</span>
-              {hasRecommendation && (
-                <span><span className="legend-swatch legend-swatch--dashed" />Active Dispatch Route (baseline)</span>
-              )}
+              {simulationRunning && <span className="live-pill live-pill--on"><span className="live-dot" /> Live</span>}
             </div>
 
             <RouteMetricGrid route={selectedRoute} scenarioResult={activeScenarioResult} />
 
             {hasRecommendation && (
-              <RouteValidationBanner plannedStops={plannedStops} resultStops={recommendedStops} label="Recommended" />
+              <RouteValidationBanner plannedStops={remainingStops} resultStops={recommendedStops} label="Recommended" />
             )}
 
             <div className="map-frame map-frame--large">
@@ -295,15 +339,37 @@ export default function ScenarioPage() {
                 handleSuggestionDecision={handleSuggestionDecision}
                 scenarioResult={activeScenarioResult}
                 showScenario={Boolean(activeScenarioResult)}
-                showAlternatives={false}
                 showLiveCouriers={simulationRunning}
+                completedStopIds={completedStopIds}
+                nextStopId={nextStop?.stop_id}
+                legendContext="monitor"
               />
             </div>
           </section>
 
-          {/* Right: Segment Editor */}
+          {/* Right: Segment Editor for remaining stops only */}
           <aside className="page-card page-card--scroll">
-            <SegmentEditor segments={segments} onChange={handleSegmentChange} />
+            <span className="panel-kicker">Segment overrides</span>
+            {allRouteCompleted ? (
+              <div className="info-banner info-banner--green" style={{ fontSize: '0.82rem' }}>
+                All stops completed. No remaining road sections to configure.
+              </div>
+            ) : (
+              <>
+                {completedStops.length > 0 && (
+                  <div className="info-banner info-banner--blue" style={{ fontSize: '0.76rem', marginBottom: '0.5rem' }}>
+                    Segments are based on the <strong>{remainingStops.length} remaining stops</strong> ({segments.length} editable segments). Completed road sections are not reoptimized.
+                  </div>
+                )}
+                {segments.length > 0 ? (
+                  <SegmentEditor segments={segments} onChange={handleSegmentChange} />
+                ) : (
+                  <div style={{ color: '#6b7280', fontSize: '0.82rem', padding: '1rem 0' }}>
+                    Not enough remaining stops to create segments.
+                  </div>
+                )}
+              </>
+            )}
           </aside>
         </div>
 
@@ -312,20 +378,27 @@ export default function ScenarioPage() {
           <div className="responsive-results-grid">
             <section className="page-card">
               <span className="panel-kicker">Stop order comparison</span>
-              <h2>Before vs after ({baselineStops.length} → {recommendedStops.length} stops)</h2>
-              <RouteOrderComparison baseline={baselineStops} scenario={activeScenarioResult} />
+              <h2>Remaining: before vs after ({remainingStops.length} → {recommendedStops.length})</h2>
+              <RouteOrderComparison baseline={remainingStops} scenario={activeScenarioResult} />
             </section>
             <section className="page-card">
               <span className="panel-kicker">Recommendation explanation</span>
               <h2>What changed and why</h2>
 
-              {activeScenarioResult?.delta ? (
+              {activeScenarioResult?.delta && (
                 <div className="metric-grid" style={{ marginBottom: '1rem' }}>
                   <MetricCard label="Travel delta" value={`${activeScenarioResult.delta.travel_time_min != null ? (activeScenarioResult.delta.travel_time_min > 0 ? '+' : '') + activeScenarioResult.delta.travel_time_min : '--'} min`} />
                   <MetricCard label="Delay delta" value={`${activeScenarioResult.delta.expected_delay_min != null ? (activeScenarioResult.delta.expected_delay_min > 0 ? '+' : '') + activeScenarioResult.delta.expected_delay_min : '--'} min`} />
                   <MetricCard label="Order changed" value={activeScenarioResult.order_changed ? 'Yes' : 'No'} tone={activeScenarioResult.order_changed ? 'warning' : 'success'} />
                 </div>
-              ) : null}
+              )}
+
+              {/* Deterministic explanation always visible immediately */}
+              {activeScenarioResult?.deterministic_summary && !agentExplanation && (
+                <div className="info-banner info-banner--blue" style={{ marginBottom: '0.5rem', fontSize: '0.82rem' }}>
+                  <strong>Deterministic analysis:</strong> {activeScenarioResult.deterministic_summary || 'Route reoptimized under updated conditions.'}
+                </div>
+              )}
 
               <AgentExplanationPanel
                 explanation={agentExplanation}
@@ -333,22 +406,24 @@ export default function ScenarioPage() {
                 error={agentExplanationError}
               />
 
-              {/* Apply / Reject buttons */}
+              {agentExplanationLoading && (
+                <div style={{ fontSize: '0.78rem', color: '#6b7280', marginTop: '0.3rem' }}>
+                  <span className="live-dot" style={{ marginRight: '0.4rem', display: 'inline-block', width: 8, height: 8, borderRadius: '50%', backgroundColor: '#3b82f6', animation: 'pulse 1.5s infinite' }} />
+                  AI explanation is being generated by Ollama LLM (estimated ~60-90s on first call). You can apply the recommendation now.
+                </div>
+              )}
+
               <div className="responsive-btn-row" style={{ marginTop: '1rem' }}>
                 <button
                   className="control-btn dispatch-btn"
                   onClick={handleApplyRecommendation}
                   disabled={!recommendationValid}
-                  title={!recommendationValid ? 'Route validation failed. Cannot apply.' : ''}
-                  style={{ flex: 1 }}
+                  title={!recommendationValid ? `Route validation failed. ${validationMissing.length > 0 ? `Missing: ${validationMissing.map(s => s.stop_id).join(', ')}. ` : ''}${validationExtra.length > 0 ? `Unexpected: ${validationExtra.map(s => s.stop_id || s.stop_name).join(', ')}.` : ''}` : ''}
+                  style={{ flex: 1, opacity: recommendationValid ? 1 : 0.5 }}
                 >
-                  Apply Recommendation
+                  {recommendationValid ? 'Apply Recommendation' : 'Apply Blocked — Validation Failed'}
                 </button>
-                <button
-                  className="control-btn control-btn--neutral"
-                  onClick={handleKeepCurrentRoute}
-                  style={{ flex: 1 }}
-                >
+                <button className="control-btn control-btn--neutral" onClick={handleKeepCurrentRoute} style={{ flex: 1 }}>
                   Keep Current Route
                 </button>
               </div>

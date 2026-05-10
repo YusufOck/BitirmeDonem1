@@ -129,6 +129,65 @@ def run_scenario_check(label, vehicle_stops, traffic_density):
     print(f"    order_changed={order_changed} (informational, not a failure)")
 
 
+def run_segment_override_check(vehicle_stops):
+    """
+    Force a high-risk closure on the first active leg and verify the backend
+    produces a different valid recommendation. This proves segment overrides
+    are not just UI labels.
+    """
+    if len(vehicle_stops) < 3:
+        check("segment override skipped", False, "need at least 3 stops")
+        return
+
+    scenario_stops = [build_scenario_stop(s, i) for i, s in enumerate(vehicle_stops)]
+    first = scenario_stops[0]
+    second = scenario_stops[1]
+    body = {
+        "depot_latitude": 39.75,
+        "depot_longitude": 37.015,
+        "stops": scenario_stops,
+        "controls": {
+            "traffic_density": 20,
+            "accident_severity": 0,
+            "weather_condition": "clear",
+            "weather_severity": 0,
+            "road_disruption": 0,
+            "package_load": 0,
+            "dispatch_hour": 12,
+        },
+        "segment_overrides": [{
+            "from_stop_id": str(first.get("stop_id")),
+            "to_stop_id": str(second.get("stop_id")),
+            "traffic_density": 100,
+            "accident_severity": 100,
+            "road_closure": True,
+            "weather_severity": 100,
+            "speed_reduction": 100,
+            "extra_delay_min": 60,
+            "risk_level": "high",
+            "priority": 0,
+            "road_type": "urban",
+        }],
+        "time_limit_seconds": 15,
+    }
+
+    print("\n  Vehicle 0, forced segment closure:")
+    resp = requests.post(f"{API}/scenario/reoptimize", json=body, timeout=30)
+    if not check("HTTP 200", resp.status_code == 200, f"status={resp.status_code}"):
+        return
+    data = resp.json()
+    sc = data.get("scenario_route", [])
+    sc_ids = [s.get("stop_id", "?") for s in sc]
+    check("scenario count preserved", len(sc) == len(vehicle_stops), f"got {len(sc)}")
+    check("no duplicate stop_ids", len(set(sc_ids)) == len(sc_ids), f"{len(sc_ids)} unique")
+    check("order changed under closed segment", bool(data.get("order_changed")), f"after={data.get('sequence_after')}")
+    check(
+        "segment impact explained",
+        any("Segment" in item.get("label", "") for item in data.get("factor_impacts", [])),
+        "factor_impacts contains segment override",
+    )
+
+
 def main():
     print("=" * 60)
     print("  Frontend-Equivalent Flow -- API Verification")
@@ -196,6 +255,7 @@ def main():
     run_scenario_check("Vehicle 0, moderate traffic", v0_stops, 80)
     run_scenario_check("Vehicle 0, extreme traffic", v0_stops, 100)
     run_scenario_check("Vehicle 1, extreme traffic", v1_stops, 100)
+    run_segment_override_check(v0_stops)
 
     # ── Summary ───────────────────────────────────────────────────
     passed = sum(results)

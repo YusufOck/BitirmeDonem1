@@ -31,6 +31,9 @@ export default function MapViewer({
   showScenario = false,
   showOriginalRoute = true,
   showLiveCouriers = false,
+  completedStopIds = new Set(),
+  nextStopId = null,
+  legendContext = 'planner',
 }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showOriginal, setShowOriginal] = useState(showOriginalRoute);
@@ -73,16 +76,22 @@ export default function MapViewer({
       <div className="map-proof-controls">
         <div>
           <span className="legend-line legend-line--original" />
-          <span>Original plan</span>
+          <span>{legendContext === 'monitor' ? 'Active route' : 'Original plan'}</span>
         </div>
         <div>
           <span className="legend-line legend-line--optimized" />
-          <span>Optimized route</span>
+          <span>{legendContext === 'monitor' ? 'Recommended' : 'Optimized route'}</span>
         </div>
         {showScenario && scenarioResult?.scenarioGeometry && (
           <div>
             <span className="legend-line legend-line--scenario" />
             <span>Scenario route</span>
+          </div>
+        )}
+        {completedStopIds.size > 0 && (
+          <div>
+            <span className="legend-dot legend-dot--completed" />
+            <span>Completed</span>
           </div>
         )}
         <button onClick={() => setShowOriginal((value) => !value)}>
@@ -139,47 +148,63 @@ export default function MapViewer({
           </Source>
         )}
 
-        {routesToRender && routesToRender.map((routeData, index) => (
-          <React.Fragment key={`fragment-${routeData.id || index}`}>
-            <Source
-              id={`route-${routeData.id || index}`}
-              type="geojson"
-              data={routeData.geometry}
-            >
-              <Layer
-                id={`layer-${routeData.id || index}`}
-                type="line"
-                layout={{
-                  'line-join': 'round',
-                  'line-cap': 'round',
-                }}
-                paint={{
-                  'line-color': routeData.color || '#eb5647',
-                  'line-width': selectedCourierId === null ? 5 : 6,
-                  'line-opacity': selectedCourierId === null ? 0.78 : 0.92,
-                  'line-dasharray': routeData.geometry?.isFallback ? [2, 4] : undefined,
-                }}
-              />
-            </Source>
-
-            {routeData.stops && routeData.stops.map((stop, stopIndex) => (
-              <Marker
-                key={`stop-${routeData.id}-${stop.stop_id || stopIndex}`}
-                longitude={stop.longitude}
-                latitude={stop.latitude}
-                anchor="center"
+        {routesToRender && routesToRender.map((routeData, index) => {
+          const geoTs = routeData.geometry?._ts || '';
+          const sourceId = `route-${routeData.id || index}-${geoTs}`;
+          return (
+            <React.Fragment key={`fragment-${routeData.id || index}-${geoTs}`}>
+              <Source
+                id={sourceId}
+                type="geojson"
+                data={routeData.geometry}
               >
-                <div
-                  className={`stop-marker ${Number(stop.expected_delay_min || 0) > 0 ? 'stop-marker--delay' : ''}`}
-                  style={{ '--marker-color': routeData.color || '#eb5647' }}
-                  title={`${stop.stop_name || 'Stop'} ${Number(stop.expected_delay_min || 0) > 0 ? `(Delay: ${stop.expected_delay_min}m)` : ''}`}
-                >
-                  {stop.displaySequence || stop.optimized_position + 1 || stopIndex + 1}
-                </div>
-              </Marker>
-            ))}
-          </React.Fragment>
-        ))}
+                <Layer
+                  id={`layer-${routeData.id || index}-${geoTs}`}
+                  type="line"
+                  layout={{
+                    'line-join': 'round',
+                    'line-cap': 'round',
+                  }}
+                  paint={{
+                    'line-color': routeData.color || '#eb5647',
+                    'line-width': selectedCourierId === null ? 5 : 6,
+                    'line-opacity': selectedCourierId === null ? 0.78 : 0.92,
+                    ...(routeData.geometry?.isFallback ? { 'line-dasharray': [2, 4] } : {}),
+                  }}
+                />
+              </Source>
+
+              {routeData.stops && routeData.stops.map((stop, stopIndex) => {
+                const stopId = String(stop.stop_id || '');
+                const isCompleted = completedStopIds.has(stopId);
+                const isNext = stopId === String(nextStopId || '');
+                let markerClass = 'stop-marker';
+                if (isCompleted) markerClass += ' stop-marker--completed';
+                else if (isNext) markerClass += ' stop-marker--next';
+                else if (Number(stop.expected_delay_min || 0) > 0) markerClass += ' stop-marker--delay';
+
+                const seq = stop.displaySequence || (stop.optimized_position != null ? stop.optimized_position + 1 : stopIndex + 1);
+                const label = `${seq} — ${stop.stop_id || 'Stop'}`;
+                return (
+                  <Marker
+                    key={`stop-${routeData.id}-${stop.stop_id || stopIndex}`}
+                    longitude={stop.longitude}
+                    latitude={stop.latitude}
+                    anchor="center"
+                  >
+                    <div
+                      className={markerClass}
+                      style={{ '--marker-color': isCompleted ? '#10b981' : isNext ? '#3b82f6' : (routeData.color || '#eb5647') }}
+                      title={`${label}${isCompleted ? ' (Completed)' : isNext ? ' (Next)' : ''}`}
+                    >
+                      {isCompleted ? '✓' : seq}
+                    </div>
+                  </Marker>
+                );
+              })}
+            </React.Fragment>
+          );
+        })}
 
 
 

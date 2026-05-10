@@ -228,6 +228,10 @@ const hasScenarioForRoute = (scenarioResult, route) => (
   getScenarioCoordinates(scenarioResult).length >= 2
 );
 
+const getBackendRouteId = (state, vehicleId) => (
+  state.routes.find((route) => route.vehicle_id === vehicleId)?.routeId ?? vehicleId
+);
+
 const getSimulationCoordinates = (route, scenarioResult) => (
   hasScenarioForRoute(scenarioResult, route)
     ? getScenarioCoordinates(scenarioResult)
@@ -256,6 +260,73 @@ const getSimulationStops = (route, scenarioResult) => {
       dwell_seconds: 30,
     }));
 };
+
+const getOrderedScenarioStops = (scenarioResult) => (
+  [...(scenarioResult?.scenario_route || [])]
+    .sort((a, b) => Number(a.optimized_position || 0) - Number(b.optimized_position || 0))
+    .filter((stop) => stop.stop_id !== null && stop.stop_id !== undefined)
+);
+
+const getSegmentKey = (stop, nextStop, index) => (
+  `${stop.stop_id || index}-${nextStop.stop_id || index + 1}`
+);
+
+const filterSegmentOverridesForStops = (segmentOverrides = {}, remainingStops = []) => {
+  const validKeys = new Set(
+    remainingStops.slice(0, -1).map((stop, index) => (
+      getSegmentKey(stop, remainingStops[index + 1], index)
+    )),
+  );
+
+  return Object.fromEntries(
+    Object.entries(segmentOverrides).filter(([key]) => validKeys.has(key)),
+  );
+};
+
+const validateScenarioForApply = (route, scenarioResult, completedStopIds = new Set()) => {
+  if (!route) {
+    return { valid: false, reason: 'Route is not available.' };
+  }
+
+  const activeStopIds = (route.stops || [])
+    .map((stop) => String(stop.stop_id))
+    .filter(Boolean);
+  const completedIds = [...completedStopIds].map(String);
+  const remainingIds = activeStopIds.filter((stopId) => !completedIds.includes(stopId));
+  const recommendedStopIds = getOrderedScenarioStops(scenarioResult)
+    .map((stop) => String(stop.stop_id))
+    .filter(Boolean);
+
+  const duplicateRecommended = recommendedStopIds.filter(
+    (stopId, index) => recommendedStopIds.indexOf(stopId) !== index,
+  );
+  const completedInRecommendation = recommendedStopIds.filter((stopId) => completedIds.includes(stopId));
+  const missingStops = remainingIds.filter((stopId) => !recommendedStopIds.includes(stopId));
+  const unexpectedStops = recommendedStopIds.filter((stopId) => !remainingIds.includes(stopId));
+
+  const valid = (
+    duplicateRecommended.length === 0 &&
+    completedInRecommendation.length === 0 &&
+    missingStops.length === 0 &&
+    unexpectedStops.length === 0 &&
+    recommendedStopIds.length === remainingIds.length
+  );
+
+  return {
+    valid,
+    reason: valid ? '' : 'Recommendation does not match the remaining delivery stops.',
+    activeStopIds,
+    completedIds,
+    remainingIds,
+    recommendedStopIds,
+    duplicateRecommended,
+    completedInRecommendation,
+    missingStops,
+    unexpectedStops,
+  };
+};
+
+const _SIM_DEBUG = false; // Set true to enable WS diagnostics
 
 export const useRouteStore = create((set, get) => ({
   hasFetched: false,
@@ -288,6 +359,14 @@ export const useRouteStore = create((set, get) => ({
   simulationRouteMode: 'optimized',
   feedbackMessage: null,
   feedbackType: 'info',
+
+  // Completion tracking — single source of truth keyed by vehicleId
+  completedStopIdsByVehicle: {},
+  completedStopVersion: 0, // Increment on every completion for reliable Zustand reactivity
+
+  getCompletedStopIds: (vehicleId) => {
+    return get().completedStopIdsByVehicle[vehicleId] || new Set();
+  },
 
   setFeedback: (message, type = 'success') => set({ feedbackMessage: message, feedbackType: type }),
   clearFeedback: () => set({ feedbackMessage: null }),
@@ -386,13 +465,8 @@ export const useRouteStore = create((set, get) => ({
 
     set({ scenarioLoading: true, scenarioError: null });
 
-    // Get completed stop IDs from courier data
-    const courier = state.couriers.find((c) => c.id === selectedRoute.vehicle_id);
-    const completedStopIds = new Set(
-      (courier?.stops || [])
-        .filter((s) => s.status === 'completed')
-        .map((s) => String(s.stop_id))
-    );
+    // Get completed stop IDs from store (single source of truth)
+    const completedStopIds = state.completedStopIdsByVehicle[selectedRoute.vehicle_id] || new Set();
 
     // Only send remaining (non-completed) stops for reoptimization
     const remainingStops = selectedRoute.stops
@@ -405,8 +479,12 @@ export const useRouteStore = create((set, get) => ({
 
     try {
       const controls = getControlsForRoute(state, selectedRoute.vehicle_id);
-      const segmentOverrides = normalizeSegmentOverrides(
+      const activeSegmentOverrides = filterSegmentOverridesForStops(
         state.segmentOverridesByVehicleId[selectedRoute.vehicle_id] || {},
+        remainingStops,
+      );
+      const segmentOverrides = normalizeSegmentOverrides(
+        activeSegmentOverrides,
       );
       const result = await fetchScenarioReoptimization({
         ...DEFAULT_DEPOT,
@@ -466,23 +544,31 @@ export const useRouteStore = create((set, get) => ({
 
   requestAgentExplanation: async (payload) => {
     set({ agentExplanationLoading: true, agentExplanationError: null });
+
+    // No frontend timeout — the backend has its own 120s timeout.
+    // Deterministic explanation is shown immediately via scenarioResult.
+    // AI explanation will appear when the Ollama LLM finishes generating.
     try {
       const result = await fetchAgentExplanation(payload);
       set({ agentExplanation: result, agentExplanationLoading: false });
       return result;
     } catch (err) {
-      set({ agentExplanationError: err.message, agentExplanationLoading: false });
-      throw err;
+      if (_SIM_DEBUG) console.warn('[EXPLAIN] AI explanation request failed:', err.message);
+      set({
+        agentExplanationLoading: false,
+        agentExplanationError: 'AI explanation could not be loaded. Deterministic analysis is shown above.',
+      });
     }
   },
 
-  loadLifecycleState: async (routeId) => {
+  loadLifecycleState: async (vehicleId) => {
     try {
-      const stateData = await fetchRouteLifecycleState(routeId);
+      const apiRouteId = getBackendRouteId(get(), vehicleId);
+      const stateData = await fetchRouteLifecycleState(apiRouteId);
       set((state) => ({
         routeLifecycleByVehicleId: {
           ...state.routeLifecycleByVehicleId,
-          [routeId]: stateData,
+          [vehicleId]: stateData,
         },
       }));
     } catch (err) {
@@ -490,13 +576,14 @@ export const useRouteStore = create((set, get) => ({
     }
   },
 
-  startDispatch: async (routeId) => {
+  startDispatch: async (vehicleId) => {
     try {
-      const stateData = await startDispatchRoute(routeId);
+      const apiRouteId = getBackendRouteId(get(), vehicleId);
+      const stateData = await startDispatchRoute(apiRouteId);
       set((state) => ({
         routeLifecycleByVehicleId: {
           ...state.routeLifecycleByVehicleId,
-          [routeId]: stateData,
+          [vehicleId]: stateData,
         },
         feedbackMessage: 'Courier dispatched. Live tracking started.',
         feedbackType: 'success',
@@ -509,13 +596,14 @@ export const useRouteStore = create((set, get) => ({
     }
   },
 
-  recalculateLiveRecommendation: async (routeId) => {
+  recalculateLiveRecommendation: async (vehicleId) => {
     try {
-      const stateData = await recalculateRecommendation(routeId);
+      const apiRouteId = getBackendRouteId(get(), vehicleId);
+      const stateData = await recalculateRecommendation(apiRouteId);
       set((state) => ({
         routeLifecycleByVehicleId: {
           ...state.routeLifecycleByVehicleId,
-          [routeId]: stateData,
+          [vehicleId]: stateData,
         },
       }));
     } catch (err) {
@@ -523,62 +611,108 @@ export const useRouteStore = create((set, get) => ({
     }
   },
 
-  applyLiveRecommendation: async (routeId) => {
+  applyLiveRecommendation: async (vehicleId) => {
     try {
-      const stateData = await applyRecommendation(routeId);
       const state = get();
-      const scenarioResult = state.scenarioResultsByVehicleId[routeId] || state.scenarioResult;
-      const route = state.routes.find((r) => r.vehicle_id === routeId);
+      const route = state.routes.find((r) => r.vehicle_id === vehicleId);
+      const scenarioResult = state.scenarioResultsByVehicleId[vehicleId]
+        || (state.scenarioResult?.vehicleId === vehicleId ? state.scenarioResult : null);
+      const completedIds = state.completedStopIdsByVehicle[vehicleId] || new Set();
+      const validation = validateScenarioForApply(route, scenarioResult, completedIds);
 
-      // Update lifecycle and mark recommendation applied
-      const updates = {
-        routeLifecycleByVehicleId: {
-          ...state.routeLifecycleByVehicleId,
-          [routeId]: stateData,
-        },
-        feedbackMessage: 'Recommendation applied. Active route updated.',
-        feedbackType: 'success',
-      };
+      if (!validation.valid) {
+        set({
+          feedbackMessage: [
+            validation.reason,
+            validation.missingStops?.length ? `Missing: ${validation.missingStops.join(', ')}` : '',
+            validation.unexpectedStops?.length ? `Unexpected: ${validation.unexpectedStops.join(', ')}` : '',
+            validation.completedInRecommendation?.length
+              ? `Already completed: ${validation.completedInRecommendation.join(', ')}`
+              : '',
+          ].filter(Boolean).join(' '),
+          feedbackType: 'error',
+        });
+        return;
+      }
 
-      // If scenario has new geometry, update the route to use it as active
-      if (scenarioResult?.scenarioGeometry && route) {
-        const updatedRoutes = state.routes.map((r) => {
-          if (r.vehicle_id !== routeId) return r;
+      const apiRouteId = getBackendRouteId(state, vehicleId);
+      const stateData = await applyRecommendation(apiRouteId, {
+        active_stop_ids: validation.activeStopIds,
+        completed_stop_ids: validation.completedIds,
+        recommended_stop_ids: validation.recommendedStopIds,
+        scenario_geometry: scenarioResult?.scenarioGeometry?.geometry || null,
+        scenario_summary: scenarioResult?.scenario_summary || scenarioResult?.scenarioSummary || null,
+      });
+
+      // Build updated routes — MERGE completed stops with scenario route
+      // so route.stops always contains ALL stops (completed + remaining).
+      let updatedRoutes = state.routes;
+      if (scenarioResult && route) {
+        updatedRoutes = state.routes.map((r) => {
+          if (r.vehicle_id !== vehicleId) return r;
+          const newGeometry = scenarioResult.scenarioGeometry || r.geometry;
+          const scenarioStops = getOrderedScenarioStops(scenarioResult);
+          const scenarioStopIds = new Set(scenarioStops.map((s) => String(s.stop_id)));
+
+          // Collect completed stops from current route that are NOT in scenario result
+          const completedStopsToPreserve = r.stops
+            .filter((s) => completedIds.has(String(s.stop_id)) && !scenarioStopIds.has(String(s.stop_id)))
+            .map((s) => ({ ...s, status: 'completed' }));
+
+          // Merge: completed stops first, then scenario stops with status correction
+          const mergedStops = [
+            ...completedStopsToPreserve,
+            ...scenarioStops.map((s, index) => ({
+              ...s,
+              status: 'pending',
+              displaySequence: completedStopsToPreserve.length + index + 1,
+            })),
+          ];
+
           return {
             ...r,
-            originalGeometry: r.geometry,
-            geometry: scenarioResult.scenarioGeometry,
-            stops: scenarioResult.scenario_route || r.stops,
+            originalGeometry: r.originalGeometry || r.geometry,
+            geometry: newGeometry ? { ...newGeometry, _ts: Date.now() } : r.geometry,
+            stops: mergedStops,
           };
         });
-        updates.routes = updatedRoutes;
       }
 
       // Clear recommendation from results (it's now the active route)
       const nextResults = { ...state.scenarioResultsByVehicleId };
-      delete nextResults[routeId];
-      updates.scenarioResultsByVehicleId = nextResults;
-      updates.scenarioResult = routeId === state.selectedCourierId ? null : state.scenarioResult;
+      delete nextResults[vehicleId];
 
-      set(updates);
+      set({
+        routes: updatedRoutes,
+        routeLifecycleByVehicleId: {
+          ...state.routeLifecycleByVehicleId,
+          [vehicleId]: stateData,
+        },
+        scenarioResultsByVehicleId: nextResults,
+        scenarioResult: vehicleId === state.selectedCourierId ? null : state.scenarioResult,
+        feedbackMessage: scenarioResult?.scenarioGeometry
+          ? 'Recommendation applied. Active route updated.'
+          : 'Route conditions updated. Stop order/conditions were applied.',
+        feedbackType: 'success',
+      });
 
       // Rebind simulation to the updated active route
-      if (state.wsConnected && state._wsRef?.readyState === WebSocket.OPEN && route) {
-        const updatedRoute = get().routes.find((r) => r.vehicle_id === routeId);
+      if (state.wsConnected && state._wsRef?.readyState === WebSocket.OPEN) {
+        const updatedRoute = get().routes.find((r) => r.vehicle_id === vehicleId);
         if (updatedRoute) {
           const coords = updatedRoute.geometry?.geometry?.coordinates || [];
           if (coords.length >= 2) {
             state._wsRef.send(JSON.stringify({
               type: 'reroute',
-              courier_id: `courier-${routeId}`,
+              courier_id: `courier-${vehicleId}`,
               coordinates: coords,
-              stops: getSimulationStops(updatedRoute, null),
+              stops: getSimulationStops(updatedRoute, null)
+                .filter((s) => !completedIds.has(String(s.stop_id))),
               route_source: 'applied',
             }));
           }
         }
       } else {
-        // Restart simulation with updated routes
         get().stopSimulation();
         setTimeout(() => get().startSimulation(), 300);
       }
@@ -588,14 +722,20 @@ export const useRouteStore = create((set, get) => ({
     }
   },
 
-  resetRouteLifecycle: async (routeId) => {
+  resetRouteLifecycle: async (vehicleId) => {
     try {
-      const stateData = await resetLifecycle(routeId);
+      const apiRouteId = getBackendRouteId(get(), vehicleId);
+      const stateData = await resetLifecycle(apiRouteId);
       set((state) => ({
         routeLifecycleByVehicleId: {
           ...state.routeLifecycleByVehicleId,
-          [routeId]: stateData,
+          [vehicleId]: stateData,
         },
+        completedStopIdsByVehicle: {
+          ...state.completedStopIdsByVehicle,
+          [vehicleId]: new Set(),
+        },
+        completedStopVersion: state.completedStopVersion + 1,
       }));
     } catch (err) {
       console.error('Failed to reset lifecycle:', err);
@@ -695,6 +835,18 @@ export const useRouteStore = create((set, get) => ({
         })
         .filter((route) => route.geometry != null);
 
+      const initialCompletedByVehicleId = parsedRoutes.reduce((acc, route) => {
+        const completedIds = new Set(
+          (route.stops || [])
+            .filter((stop) => stop.status === 'completed')
+            .map((stop) => String(stop.stop_id)),
+        );
+        if (completedIds.size > 0) {
+          acc[route.vehicle_id] = completedIds;
+        }
+        return acc;
+      }, {});
+
       const parsedCouriers = parsedRoutes.map((route) => {
         const status = getStatusFromMetrics({
           severe_stop_count: route.metrics.severeStops,
@@ -757,6 +909,8 @@ export const useRouteStore = create((set, get) => ({
         segmentOverridesByVehicleId: {},
         scenarioResult: null,
         scenarioError: null,
+        completedStopIdsByVehicle: initialCompletedByVehicleId,
+        completedStopVersion: get().completedStopVersion + 1,
         loading: false,
         hasFetched: true,
       });
@@ -773,6 +927,7 @@ export const useRouteStore = create((set, get) => ({
       wsConnected,
       scenarioResult,
       scenarioResultsByVehicleId,
+      completedStopIdsByVehicle,
     } = get();
 
     if (routes.length === 0) return;
@@ -788,8 +943,10 @@ export const useRouteStore = create((set, get) => ({
 
     ws.onopen = () => {
       const vehicles = routes.map((route) => {
-        const routeScenario = scenarioResultsByVehicleId[route.vehicle_id] || scenarioResult;
+        const routeScenario = scenarioResultsByVehicleId[route.vehicle_id]
+          || (scenarioResult?.vehicleId === route.vehicle_id ? scenarioResult : null);
         const usesScenario = hasScenarioForRoute(routeScenario, route);
+        const completedIds = completedStopIdsByVehicle[route.vehicle_id] || new Set();
         return {
           courier_id: `courier-${route.vehicle_id}`,
           name: route.courierName,
@@ -797,7 +954,8 @@ export const useRouteStore = create((set, get) => ({
           coordinates: getSimulationCoordinates(route, routeScenario),
           color: usesScenario ? '#22d3ee' : route.color,
           route_source: usesScenario ? 'scenario' : 'optimized',
-          stops: getSimulationStops(route, routeScenario),
+          stops: getSimulationStops(route, routeScenario)
+            .filter((stop) => !completedIds.has(String(stop.stop_id))),
         };
       });
 
@@ -823,6 +981,10 @@ export const useRouteStore = create((set, get) => ({
 
       if (data.type === 'error') {
         console.error('Simulation error from server:', data.message);
+      }
+
+      if (_SIM_DEBUG && data.type !== 'position_update') {
+        console.log('[WS]', data.type, data);
       }
 
       if (data.type === 'position_update') {
@@ -856,54 +1018,82 @@ export const useRouteStore = create((set, get) => ({
 
       if (data.type === 'at_stop') {
         const vehicleId = parseInt(data.courier_id.replace('courier-', ''), 10);
+        const completedStopId = String(data.stop_id);
 
-        completeStopRequest(data.stop_id)
-          .then((response) => {
-            const { stop, reopt } = response;
+        if (_SIM_DEBUG) {
+          console.log(
+            `[WS AT_STOP] vehicle=${vehicleId} stop=${completedStopId}`,
+            `completed=${data.completed_count}/${data.total_count}`,
+          );
+        }
 
-            set((state) => {
-              const updatedCouriers = state.couriers.map((courier) => {
-                if (courier.id !== vehicleId) return courier;
+        // IMMEDIATELY mark stop as completed in store (single source of truth)
+        set((state) => {
+          // Update completedStopIdsByVehicle
+          const prevCompleted = state.completedStopIdsByVehicle[vehicleId] || new Set();
+          if (prevCompleted.has(completedStopId)) return state; // Already completed
+          const nextCompleted = new Set(prevCompleted);
+          nextCompleted.add(completedStopId);
 
-                const completedStops = courier.stops.map((currentStop) => (
-                  String(currentStop.stop_id) === String(stop.id)
-                    ? { ...currentStop, status: 'completed' }
-                    : currentStop
-                ));
-                const remainingCount = completedStops.filter((currentStop) => currentStop.status !== 'completed').length;
-
-                return {
-                  ...courier,
-                  stops: completedStops,
-                  stopsRemaining: remainingCount,
-                  stats: {
-                    ...courier.stats,
-                    completedStops: completedStops.length - remainingCount,
-                  },
-                };
-              });
-
-              const updatedPackages = state.packages.map((pkg) => (
-                String(pkg.stop_id) === String(stop.id)
-                  ? { ...pkg, status: 'completed' }
-                  : pkg
-              ));
-
-              const newPendingSuggestions = { ...state.pendingSuggestions };
-              if (reopt?.triggered && reopt.suggestion_id) {
-                newPendingSuggestions[vehicleId] = { ...reopt, vehicleId };
-              }
-
-              return {
-                couriers: updatedCouriers,
-                packages: updatedPackages,
-                pendingSuggestions: newPendingSuggestions,
-              };
-            });
-          })
-          .catch((error) => {
-            console.error('Failed to complete stop or re-optimize:', error);
+          // Update routes[].stops — the data that MapViewer renders
+          const updatedRoutes = state.routes.map((r) => {
+            if (r.vehicle_id !== vehicleId) return r;
+            return {
+              ...r,
+              stops: r.stops.map((s) =>
+                String(s.stop_id) === completedStopId
+                  ? { ...s, status: 'completed' }
+                  : s
+              ),
+            };
           });
+
+          // Update couriers[].stops
+          const updatedCouriers = state.couriers.map((c) => {
+            if (c.id !== vehicleId) return c;
+            const updatedStops = (c.stops || []).map((s) =>
+              String(s.stop_id) === completedStopId
+                ? { ...s, status: 'completed' }
+                : s
+            );
+            return { ...c, stops: updatedStops };
+          });
+
+          const nextVersion = state.completedStopVersion + 1;
+
+          if (_SIM_DEBUG) {
+            console.log(
+              `[STORE] completedStopIds[${vehicleId}] size=${nextCompleted.size}`,
+              `version=${nextVersion}`,
+              `ids=[${[...nextCompleted].join(', ')}]`,
+            );
+          }
+
+          // Clear stale scenario results — old recommendation is no longer valid
+          // because the remaining stops have changed.
+          const nextScenarioResults = { ...state.scenarioResultsByVehicleId };
+          if (nextScenarioResults[vehicleId]) {
+            delete nextScenarioResults[vehicleId];
+            if (_SIM_DEBUG) console.log(`[STORE] Cleared stale scenario for vehicle ${vehicleId}`);
+          }
+
+          return {
+            completedStopIdsByVehicle: {
+              ...state.completedStopIdsByVehicle,
+              [vehicleId]: nextCompleted,
+            },
+            completedStopVersion: nextVersion,
+            routes: updatedRoutes,
+            couriers: updatedCouriers,
+            scenarioResultsByVehicleId: nextScenarioResults,
+            scenarioResult: state.selectedCourierId === vehicleId ? null : state.scenarioResult,
+          };
+        });
+
+        // Fire-and-forget REST call for backend persistence
+        completeStopRequest(data.stop_id).catch((error) => {
+          console.warn('Backend stop completion call failed (UI already updated):', error.message);
+        });
       }
     };
 
@@ -947,12 +1137,30 @@ export const useRouteStore = create((set, get) => ({
         const updatedRoutes = state.routes.map((route) => {
           if (route.vehicle_id !== vehicleId) return route;
 
+          let nextStops = route.stops;
+          if (suggestion.new_sequence?.length) {
+            const completedStops = route.stops.filter((stop) => stop.status === 'completed');
+            const remainingStops = route.stops.filter((stop) => stop.status !== 'completed');
+            const seqMap = new Map(
+              suggestion.new_sequence.map((stopId, idx) => [String(stopId), idx]),
+            );
+            nextStops = [
+              ...completedStops,
+              ...remainingStops.sort((a, b) => {
+                const first = seqMap.has(String(a.stop_id)) ? seqMap.get(String(a.stop_id)) : Infinity;
+                const second = seqMap.has(String(b.stop_id)) ? seqMap.get(String(b.stop_id)) : Infinity;
+                return first - second;
+              }),
+            ];
+          }
+
           return {
             ...route,
             geometry: { type: 'Feature', geometry: suggestion.geometry },
             naiveGeometry: suggestion.previous_geometry
               ? { type: 'Feature', geometry: suggestion.previous_geometry }
               : route.naiveGeometry,
+            stops: nextStops,
           };
         });
 

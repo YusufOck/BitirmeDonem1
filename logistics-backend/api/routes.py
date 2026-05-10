@@ -1083,6 +1083,61 @@ async def optimize_scenario(id: int, db: Session = Depends(get_db)):
 
 _route_lifecycle_state: dict[int, dict] = {}
 
+
+class ApplyRecommendationRequest(BaseModel):
+    """Payload used to make recommendation application auditable."""
+
+    active_stop_ids: list[str] = Field(default_factory=list)
+    completed_stop_ids: list[str] = Field(default_factory=list)
+    recommended_stop_ids: list[str] = Field(default_factory=list)
+    scenario_geometry: dict | None = None
+    scenario_summary: dict | None = None
+
+
+def _validate_recommendation_payload(body: ApplyRecommendationRequest | None) -> dict:
+    """Validate that a recommendation contains exactly the future stops."""
+    if body is None:
+        return {"valid": True, "warnings": ["legacy apply without recommendation payload"]}
+
+    active_ids = [str(item) for item in body.active_stop_ids if str(item)]
+    completed_ids = [str(item) for item in body.completed_stop_ids if str(item)]
+    recommended_ids = [str(item) for item in body.recommended_stop_ids if str(item)]
+
+    active_set = set(active_ids)
+    completed_set = set(completed_ids)
+    recommended_set = set(recommended_ids)
+    remaining_set = active_set - completed_set
+
+    errors: list[str] = []
+    if len(recommended_ids) != len(recommended_set):
+        errors.append("recommended route contains duplicate stops")
+    if recommended_set & completed_set:
+        errors.append(
+            "recommended route includes completed stops: "
+            + ", ".join(sorted(recommended_set & completed_set))
+        )
+    missing = sorted(remaining_set - recommended_set)
+    unexpected = sorted(recommended_set - remaining_set)
+    if missing:
+        errors.append("recommended route is missing remaining stops: " + ", ".join(missing))
+    if unexpected:
+        errors.append("recommended route includes unexpected stops: " + ", ".join(unexpected))
+    if active_ids and len(recommended_ids) != len(remaining_set):
+        errors.append(
+            f"recommended count {len(recommended_ids)} does not match remaining count {len(remaining_set)}"
+        )
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "active_count": len(active_set),
+        "completed_count": len(completed_set),
+        "remaining_count": len(remaining_set),
+        "recommended_count": len(recommended_set),
+        "missing_stop_ids": missing,
+        "unexpected_stop_ids": unexpected,
+    }
+
 def _get_lifecycle_state(route_id: int) -> dict:
     if route_id not in _route_lifecycle_state:
         _route_lifecycle_state[route_id] = {
@@ -1119,10 +1174,66 @@ def recalculate_recommendation(id: int):
     return state
 
 @router.post("/routes/{id}/recommendation/apply", tags=["lifecycle"])
-def apply_recommendation(id: int):
+def apply_recommendation(
+    id: int,
+    body: ApplyRecommendationRequest | None = None,
+    db: Session = Depends(get_db),
+):
     state = _get_lifecycle_state(id)
+    validation = _validate_recommendation_payload(body)
+    if not validation["valid"]:
+        raise HTTPException(status_code=422, detail={
+            "message": "Recommendation validation failed",
+            "validation": validation,
+        })
+
+    if body is not None:
+        route = db.get(Route, id)
+        if route is not None and body.recommended_stop_ids:
+            completed = set(str(item) for item in body.completed_stop_ids)
+            db_stops = (
+                db.query(Stop)
+                .filter(Stop.route_id == id)
+                .all()
+            )
+            stop_by_id = {str(stop.id): stop for stop in db_stops}
+            unknown = [sid for sid in body.recommended_stop_ids if str(sid) not in stop_by_id]
+            if unknown:
+                raise HTTPException(status_code=422, detail={
+                    "message": "Recommendation includes stops that do not belong to this route",
+                    "unknown_stop_ids": unknown,
+                })
+
+            completed_count = 0
+            for stop in db_stops:
+                if str(stop.id) in completed:
+                    stop.status = StopStatus.completed
+                    completed_count += 1
+
+            for position, stop_id in enumerate(body.recommended_stop_ids, start=completed_count + 1):
+                stop = stop_by_id[str(stop_id)]
+                if str(stop.id) in completed:
+                    raise HTTPException(status_code=422, detail={
+                        "message": "Completed stop cannot be placed in future route",
+                        "stop_id": str(stop.id),
+                    })
+                stop.sequence = position
+                if stop.status == StopStatus.completed:
+                    stop.status = StopStatus.pending
+
+            route.status = RouteStatus.active
+            db.commit()
+
     state["status"] = "in_progress"
     state["applied_recommendation"] = True
+    if body is not None:
+        state["active_stop_ids"] = [str(item) for item in body.active_stop_ids]
+        state["completed_stop_ids"] = [str(item) for item in body.completed_stop_ids]
+        state["current_sequence"] = [str(item) for item in body.recommended_stop_ids]
+        state["scenario_geometry"] = body.scenario_geometry
+        state["scenario_summary"] = body.scenario_summary
+        state["validation"] = validation
+    state["last_transition"] = "recommendation_applied"
     return state
 
 @router.post("/routes/{id}/lifecycle/reset", tags=["lifecycle"])
@@ -1177,15 +1288,16 @@ class AgentExplainRequest(BaseModel):
     user_question: str = ""
 
 @router.post("/agent/recommendation/explain", tags=["agent"])
-def explain_agent_recommendation(request: AgentExplainRequest):
+async def explain_agent_recommendation(request: AgentExplainRequest):
     from ai.agent import process_recommendation
-    return process_recommendation(
+    return await asyncio.to_thread(
+        process_recommendation,
         route_id=request.route_id,
         metrics={"before": request.before_metrics, "after": request.after_metrics},
         conditions=request.scenario_conditions,
         stop_order_before=request.stop_order_before,
         stop_order_after=request.stop_order_after,
-        user_question=request.user_question
+        user_question=request.user_question,
     )
 
 @router.get("/agent/evaluation/summary", tags=["agent"])

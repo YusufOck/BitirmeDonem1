@@ -4,23 +4,36 @@ Demo simulation WebSocket.
 Couriers move along the road geometry sent by the frontend. If the user runs a
 new road-condition scenario while the simulation is live, the frontend sends a
 reroute message and the courier continues on the new scenario route.
+
+Stop-completion detection uses proximity radius. The default 0.20 km (200 m)
+is appropriate for the Sivas dataset where Mapbox road geometry follows road
+centerlines while stop coordinates are at building/POI addresses (typically
+50-200 m offset). Configure via SIM_STOP_RADIUS_KM environment variable.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
+import os
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from api.location_store import courier_store
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["simulation"])
 
 UPDATE_INTERVAL_S = 2.0
-STOP_RADIUS_KM = 0.03
 DEFAULT_DWELL_S = 30.0
+
+# Configurable stop detection radius.
+# Default 0.20 km (200 m) — appropriate for Sivas demo data where road
+# geometry is 50-200 m from stop coordinates. Override with env var.
+STOP_RADIUS_KM = float(os.getenv("SIM_STOP_RADIUS_KM", "0.20"))
 
 # REST skip endpoint -> active WebSocket session. The demo runs one simulation.
 _skip_queue: asyncio.Queue = asyncio.Queue()
@@ -164,6 +177,7 @@ async def simulation_ws(ws: WebSocket):
                 "stops": vehicle.get("stops", []),
                 "dist_km": 0.0,
                 "visited_stops": set(),
+                "next_stop_index": 0,
                 "dwell_remaining_s": 0.0,
                 "done": False,
             }
@@ -199,6 +213,14 @@ async def simulation_ws(ws: WebSocket):
                         )
                         if isinstance(msg.get("stops"), list):
                             route["stops"] = msg["stops"]
+                            # Reset ordered index — the visited_stops set
+                            # is preserved so already-completed stops stay done.
+                            route["next_stop_index"] = 0
+                            # Advance next_stop_index past already-visited stops
+                            while (route["next_stop_index"] < len(route["stops"])
+                                   and str(route["stops"][route["next_stop_index"]].get("stop_id", ""))
+                                   in route["visited_stops"]):
+                                route["next_stop_index"] += 1
                         route["dwell_remaining_s"] = 0.0
                         route["done"] = False
 
@@ -215,31 +237,48 @@ async def simulation_ws(ws: WebSocket):
                     for cid, route in states.items():
                         if route["done"] or route["dwell_remaining_s"] > 0:
                             continue
-                        for stop in route["stops"]:
-                            if stop["stop_id"] in route["visited_stops"]:
-                                continue
-                            target_dist = _find_stop_dist_on_route(
-                                route["coords"], route["cum"], stop["lat"], stop["lon"]
-                            )
-                            if target_dist <= route["dist_km"]:
-                                continue
-                            gap = target_dist - route["dist_km"]
-                            if gap < best_gap:
-                                best_gap = gap
-                                best_cid = cid
-                                best_stop = stop
-                                best_target_dist = target_dist
+                        nsi = route["next_stop_index"]
+                        if nsi >= len(route["stops"]):
+                            continue
+                        stop = route["stops"][nsi]
+                        stop_id = str(stop.get("stop_id") or stop.get("id") or "")
+                        if not stop_id or stop_id in route["visited_stops"]:
+                            continue
+                        target_dist = _find_stop_dist_on_route(
+                            route["coords"], route["cum"], stop["lat"], stop["lon"]
+                        )
+                        if target_dist <= route["dist_km"]:
+                            continue
+                        gap = target_dist - route["dist_km"]
+                        if gap < best_gap:
+                            best_gap = gap
+                            best_cid = cid
+                            best_stop = stop
+                            best_target_dist = target_dist
 
                     if best_cid is not None:
                         route = states[best_cid]
                         route["dist_km"] = min(best_target_dist, route["total_km"])
-                        stop_id = best_stop["stop_id"]
+                        stop_id = str(best_stop["stop_id"])
                         route["visited_stops"].add(stop_id)
+                        # Advance next_stop_index past visited stops
+                        while (route["next_stop_index"] < len(route["stops"])
+                               and str(route["stops"][route["next_stop_index"]].get("stop_id", ""))
+                               in route["visited_stops"]):
+                            route["next_stop_index"] += 1
                         route["dwell_remaining_s"] = float(best_stop.get("dwell_seconds", DEFAULT_DWELL_S))
+                        logger.info(
+                            "[SIM-SKIP] AT_STOP %s stop=%s completed=%d/%d",
+                            best_cid, stop_id,
+                            len(route["visited_stops"]),
+                            len(route["stops"]),
+                        )
                         await ws.send_json({
                             "type": "at_stop",
                             "courier_id": best_cid,
                             "stop_id": stop_id,
+                            "completed_count": len(route["visited_stops"]),
+                            "total_count": len(route["stops"]),
                         })
 
                 positions = []
@@ -280,24 +319,40 @@ async def simulation_ws(ws: WebSocket):
                     route["dist_km"] = min(route["dist_km"] + step_km, route["total_km"])
                     lon, lat, heading = _interpolate(route["coords"], route["cum"], route["dist_km"])
 
-                    for stop in route["stops"]:
+                    # --- Ordered stop completion: only check the NEXT expected stop ---
+                    nsi = route["next_stop_index"]
+                    if nsi < len(route["stops"]):
+                        stop = route["stops"][nsi]
                         stop_id = stop.get("stop_id") or stop.get("id")
                         stop_lat = stop.get("lat") or stop.get("latitude")
                         stop_lon = stop.get("lon") or stop.get("longitude")
-                        if stop_id is None or stop_lat is None or stop_lon is None:
-                            continue
-                        stop_id = str(stop_id)
-                        if stop_id not in route["visited_stops"]:
+                        if stop_id is not None and stop_lat is not None and stop_lon is not None:
+                            stop_id = str(stop_id)
                             dist = _haversine_km(lat, lon, float(stop_lat), float(stop_lon))
+                            logger.debug(
+                                "[SIM] %s next_stop=%s dist=%.4f km radius=%.3f km",
+                                cid, stop_id, dist, STOP_RADIUS_KM,
+                            )
                             if dist < STOP_RADIUS_KM:
                                 route["visited_stops"].add(stop_id)
-                                route["dwell_remaining_s"] = float(stop.get("dwell_seconds", DEFAULT_DWELL_S))
+                                route["next_stop_index"] = nsi + 1
+                                route["dwell_remaining_s"] = float(
+                                    stop.get("dwell_seconds", DEFAULT_DWELL_S)
+                                )
+                                logger.info(
+                                    "[SIM] AT_STOP %s stop=%s completed=%d/%d remaining=%d",
+                                    cid, stop_id,
+                                    len(route["visited_stops"]),
+                                    len(route["stops"]),
+                                    len(route["stops"]) - len(route["visited_stops"]),
+                                )
                                 await ws.send_json({
                                     "type": "at_stop",
                                     "courier_id": cid,
                                     "stop_id": stop_id,
+                                    "completed_count": len(route["visited_stops"]),
+                                    "total_count": len(route["stops"]),
                                 })
-                                break
 
                     if route["dist_km"] >= route["total_km"] and route["dwell_remaining_s"] <= 0:
                         if loop:
