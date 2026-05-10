@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import MapViewer from '../features/dashboard/components/MapViewer';
 import { useRouteStore } from '../store/useRouteStore';
 import {
@@ -7,49 +8,32 @@ import {
   LoadingState, ErrorState,
 } from '../components/shared';
 
-const LIFECYCLE_LABELS = {
-  planned: 'Planned',
-  optimized_available: 'Optimized Available',
-  dispatched: 'Dispatched',
-  in_progress: 'In Progress',
-  recommendation_available: 'Recommendation Available',
-  completed: 'Completed',
-};
-
 export default function OptimizationPage() {
+  const navigate = useNavigate();
   const {
     loading, error, fetchData, forceFetchData,
     routes, selectedCourierId,
     scenarioResult, scenarioLoading, scenarioError,
     runScenario, liveCouriers, pendingSuggestions, handleSuggestionDecision,
     routeLifecycleByVehicleId, loadLifecycleState, startDispatch,
+    feedbackMessage, feedbackType, clearFeedback,
   } = useRouteStore();
 
+  useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  useEffect(() => {
-    if (selectedCourierId !== null) {
-      loadLifecycleState(selectedCourierId);
-    }
+    if (selectedCourierId !== null) loadLifecycleState(selectedCourierId);
   }, [selectedCourierId, loadLifecycleState]);
 
   const liveCourierArray = useMemo(() => Object.values(liveCouriers || {}), [liveCouriers]);
   const selectedRoute = routes.find((r) => r.vehicle_id === selectedCourierId) || routes[0] || null;
   const currentLifecycle = selectedRoute ? routeLifecycleByVehicleId[selectedRoute.vehicle_id]?.status || 'planned' : 'planned';
-
   const isDispatched = currentLifecycle === 'dispatched' || currentLifecycle === 'in_progress';
   const hasOptimizationResult = Boolean(scenarioResult?.scenario_route?.length);
 
   const handleRunOptimization = async () => {
     if (!selectedRoute) return;
-    try {
-      await runScenario(selectedRoute.vehicle_id);
-      loadLifecycleState(selectedRoute.vehicle_id);
-    } catch {
-      // error is shown in scenarioError from store
-    }
+    await runScenario(selectedRoute.vehicle_id);
+    loadLifecycleState(selectedRoute.vehicle_id);
   };
 
   const handleStartDispatch = async () => {
@@ -58,10 +42,15 @@ export default function OptimizationPage() {
   };
 
   const plannedStops = selectedRoute?.stops || [];
-  const baselineStops = scenarioResult?.baseline_route || plannedStops;
   const optimizedStops = scenarioResult?.scenario_route || [];
-  const explanation = scenarioResult?.explanation || null;
-  const explanationWarning = scenarioResult?.should_answer === false || scenarioResult?.hallucination_risk === 'high';
+  const baselineStops = scenarioResult?.baseline_route || plannedStops;
+
+  // Validation
+  const optimizedValid = !hasOptimizationResult || (() => {
+    const pIds = new Set(plannedStops.map((s) => s.stop_id || s.stop_name).filter(Boolean));
+    const oIds = new Set(optimizedStops.map((s) => s.stop_id || s.stop_name).filter(Boolean));
+    return pIds.size === oIds.size && [...pIds].every((id) => oIds.has(id));
+  })();
 
   if (loading) return <LoadingState text="Loading route data" />;
   if (error) return <ErrorState message={error} onRetry={forceFetchData} />;
@@ -71,49 +60,58 @@ export default function OptimizationPage() {
     <div className="dashboard-container">
       <div className="dashboard-shell">
         <PageHeader
-          eyebrow="Route planner"
+          eyebrow="Route planner · Before dispatch"
           title="Pre-Dispatch Route Optimization"
-          subtitle="Review the planned route, run the optimizer, and compare before/after results."
+          subtitle="Compare the planned route with the optimized route before starting dispatch."
         >
           <div className="header-metrics">
-            <MetricCard
-              label="Route health"
-              value={`${Math.max(0, 10 - Math.round((selectedRoute.metrics?.highRiskStops || 0) * 2))}/10`}
-            />
+            <MetricCard label="Stops" value={selectedRoute.metrics?.stopCount || selectedRoute.stops?.length || 0} />
             <MetricCard
               label="Expected delay"
               value={`${selectedRoute.metrics?.expectedDelayMin || 0} min`}
               tone={selectedRoute.metrics?.expectedDelayMin > 10 ? 'warning' : 'success'}
             />
             <MetricCard
-              label="Stops"
-              value={selectedRoute.metrics?.stopCount || selectedRoute.stops?.length || 0}
-            />
-            <MetricCard
-              label="Status"
-              value={LIFECYCLE_LABELS[currentLifecycle] || currentLifecycle}
-              tone={isDispatched ? 'success' : 'neutral'}
+              label="Route health"
+              value={`${Math.max(0, 10 - Math.round((selectedRoute.metrics?.highRiskStops || 0) * 2))}/10`}
             />
           </div>
         </PageHeader>
 
-        {scenarioError ? <div className="inline-error">{scenarioError}</div> : null}
-
-        {/* Lifecycle guidance */}
-        {isDispatched && (
-          <div style={{ padding: '0.6rem 0.8rem', backgroundColor: '#dbeafe', borderRadius: '6px', border: '1px solid #93c5fd', fontSize: '0.85rem', color: '#1e40af', marginBottom: '1rem' }}>
-            This route is already dispatched. Pre-dispatch optimization is disabled. Use <strong>Live Monitor</strong> to recalculate recommendations for active routes.
+        {/* Feedback banner */}
+        {feedbackMessage && (
+          <div className={`feedback-banner feedback-banner--${feedbackType}`}>
+            <span>{feedbackMessage}</span>
+            <button onClick={clearFeedback} aria-label="Dismiss">×</button>
+            {isDispatched && (
+              <button className="control-btn control-btn--primary" style={{ marginLeft: 'auto', padding: '0.4rem 1rem' }} onClick={() => navigate('/scenarios')}>
+                Open Live Monitor →
+              </button>
+            )}
           </div>
         )}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        {scenarioError ? <div className="inline-error">{scenarioError}</div> : null}
+
+        {/* Dispatched warning */}
+        {isDispatched && (
+          <div className="info-banner info-banner--blue">
+            This route is already dispatched. Pre-dispatch optimization is disabled.
+            <button className="control-btn control-btn--primary" style={{ marginLeft: 'auto', padding: '0.4rem 1rem' }} onClick={() => navigate('/scenarios')}>
+              Open Live Monitor →
+            </button>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+          {/* Map section */}
           <section className="page-card page-card--map">
             <div className="section-title-row">
               <div>
-                <span className="panel-kicker">{hasOptimizationResult ? 'Planned vs Pre-dispatch Optimized Route' : 'Planned Route'}</span>
+                <span className="panel-kicker">{hasOptimizationResult ? 'Planned vs Optimized Route' : 'Planned Route'}</span>
                 <h2>{hasOptimizationResult ? 'Optimization comparison' : 'Current planned route'}</h2>
               </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <div className="responsive-btn-row">
                 <button
                   className="control-btn control-btn--primary"
                   onClick={handleRunOptimization}
@@ -122,12 +120,8 @@ export default function OptimizationPage() {
                 >
                   {scenarioLoading ? 'Optimizing...' : 'Run Pre-dispatch Optimization'}
                 </button>
-                {hasOptimizationResult && !isDispatched && (
-                  <button
-                    className="control-btn"
-                    style={{ backgroundColor: '#10b981', color: 'white', border: 'none', padding: '0.5rem 1rem', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                    onClick={handleStartDispatch}
-                  >
+                {hasOptimizationResult && !isDispatched && optimizedValid && (
+                  <button className="control-btn dispatch-btn" onClick={handleStartDispatch}>
                     Start Dispatch
                   </button>
                 )}
@@ -135,10 +129,10 @@ export default function OptimizationPage() {
             </div>
 
             {/* Legend */}
-            <div style={{ display: 'flex', gap: '1.5rem', padding: '0.5rem 0', fontSize: '0.8rem', color: '#6b7280' }}>
-              <span><span style={{ display: 'inline-block', width: 20, height: 3, backgroundColor: '#3b82f6', marginRight: 6, verticalAlign: 'middle' }} />{hasOptimizationResult ? 'Optimized route (primary)' : 'Active route'}</span>
+            <div className="route-legend">
+              <span><span className="legend-swatch legend-swatch--primary" />{hasOptimizationResult ? 'Pre-dispatch Optimized Route' : 'Planned Route'}</span>
               {hasOptimizationResult && (
-                <span><span style={{ display: 'inline-block', width: 20, height: 3, backgroundColor: '#9ca3af', marginRight: 6, verticalAlign: 'middle', borderTop: '2px dashed #9ca3af' }} />Planned route (baseline)</span>
+                <span><span className="legend-swatch legend-swatch--dashed" />Planned Route (baseline)</span>
               )}
             </div>
 
@@ -146,9 +140,9 @@ export default function OptimizationPage() {
             {hasOptimizationResult && (
               <RouteValidationBanner plannedStops={plannedStops} resultStops={optimizedStops} label="Optimized" />
             )}
-            
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: '1.5rem', marginTop: '0.5rem' }}>
-              <div className="map-frame map-frame--large" style={{ minHeight: '500px' }}>
+
+            <div className="responsive-map-metrics">
+              <div className="map-frame map-frame--large">
                 <MapViewer
                   routes={routes}
                   selectedCourierId={selectedRoute?.vehicle_id ?? null}
@@ -165,22 +159,21 @@ export default function OptimizationPage() {
                 <RouteMetricGrid route={selectedRoute} scenarioResult={scenarioResult} />
                 <EvidencePanel
                   stops={hasOptimizationResult ? optimizedStops : plannedStops}
-                  explanation={explanation}
-                  explanationWarning={explanationWarning}
+                  explanation={scenarioResult?.explanation || null}
+                  explanationWarning={scenarioResult?.should_answer === false || scenarioResult?.hallucination_risk === 'high'}
                 />
               </div>
             </div>
           </section>
 
+          {/* Stop order comparison */}
           <section className="page-card page-card--wide">
             <span className="panel-kicker">Stop order comparison</span>
             <h2>Planned vs Optimized stop order</h2>
-            <RouteOrderComparison
-              baseline={baselineStops}
-              scenario={scenarioResult}
-            />
+            <RouteOrderComparison baseline={baselineStops} scenario={scenarioResult} />
           </section>
 
+          {/* Stop details table */}
           {(hasOptimizationResult ? optimizedStops : plannedStops).length > 0 && (
             <section className="page-card page-card--wide">
               <span className="panel-kicker">Stop details</span>

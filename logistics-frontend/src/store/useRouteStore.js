@@ -279,11 +279,18 @@ export const useRouteStore = create((set, get) => ({
   scenarioError: null,
   modelInfo: null,
 
+  // Simulation & feedback state
   liveCouriers: {},
   wsConnected: false,
   _wsRef: null,
   isConnecting: false,
+  simulationRunning: false,
   simulationRouteMode: 'optimized',
+  feedbackMessage: null,
+  feedbackType: 'info',
+
+  setFeedback: (message, type = 'success') => set({ feedbackMessage: message, feedbackType: type }),
+  clearFeedback: () => set({ feedbackMessage: null }),
 
   setSelectedCourier: (id) => set((state) => {
     const nextId = id;
@@ -379,6 +386,23 @@ export const useRouteStore = create((set, get) => ({
 
     set({ scenarioLoading: true, scenarioError: null });
 
+    // Get completed stop IDs from courier data
+    const courier = state.couriers.find((c) => c.id === selectedRoute.vehicle_id);
+    const completedStopIds = new Set(
+      (courier?.stops || [])
+        .filter((s) => s.status === 'completed')
+        .map((s) => String(s.stop_id))
+    );
+
+    // Only send remaining (non-completed) stops for reoptimization
+    const remainingStops = selectedRoute.stops
+      .filter((s) => !completedStopIds.has(String(s.stop_id)));
+
+    if (remainingStops.length === 0) {
+      set({ scenarioError: 'All stops are completed. No remaining stops to optimize.', scenarioLoading: false });
+      return;
+    }
+
     try {
       const controls = getControlsForRoute(state, selectedRoute.vehicle_id);
       const segmentOverrides = normalizeSegmentOverrides(
@@ -386,7 +410,7 @@ export const useRouteStore = create((set, get) => ({
       );
       const result = await fetchScenarioReoptimization({
         ...DEFAULT_DEPOT,
-        stops: selectedRoute.stops.map(serializeStopForScenario),
+        stops: remainingStops.map(serializeStopForScenario),
         controls,
         segment_overrides: segmentOverrides,
         time_limit_seconds: 15,
@@ -474,9 +498,14 @@ export const useRouteStore = create((set, get) => ({
           ...state.routeLifecycleByVehicleId,
           [routeId]: stateData,
         },
+        feedbackMessage: 'Courier dispatched. Live tracking started.',
+        feedbackType: 'success',
       }));
+      // Start courier simulation after dispatch
+      get().startSimulation();
     } catch (err) {
       console.error('Failed to start dispatch:', err);
+      set({ feedbackMessage: 'Failed to start dispatch: ' + err.message, feedbackType: 'error' });
     }
   },
 
@@ -497,14 +526,65 @@ export const useRouteStore = create((set, get) => ({
   applyLiveRecommendation: async (routeId) => {
     try {
       const stateData = await applyRecommendation(routeId);
-      set((state) => ({
+      const state = get();
+      const scenarioResult = state.scenarioResultsByVehicleId[routeId] || state.scenarioResult;
+      const route = state.routes.find((r) => r.vehicle_id === routeId);
+
+      // Update lifecycle and mark recommendation applied
+      const updates = {
         routeLifecycleByVehicleId: {
           ...state.routeLifecycleByVehicleId,
           [routeId]: stateData,
         },
-      }));
+        feedbackMessage: 'Recommendation applied. Active route updated.',
+        feedbackType: 'success',
+      };
+
+      // If scenario has new geometry, update the route to use it as active
+      if (scenarioResult?.scenarioGeometry && route) {
+        const updatedRoutes = state.routes.map((r) => {
+          if (r.vehicle_id !== routeId) return r;
+          return {
+            ...r,
+            originalGeometry: r.geometry,
+            geometry: scenarioResult.scenarioGeometry,
+            stops: scenarioResult.scenario_route || r.stops,
+          };
+        });
+        updates.routes = updatedRoutes;
+      }
+
+      // Clear recommendation from results (it's now the active route)
+      const nextResults = { ...state.scenarioResultsByVehicleId };
+      delete nextResults[routeId];
+      updates.scenarioResultsByVehicleId = nextResults;
+      updates.scenarioResult = routeId === state.selectedCourierId ? null : state.scenarioResult;
+
+      set(updates);
+
+      // Rebind simulation to the updated active route
+      if (state.wsConnected && state._wsRef?.readyState === WebSocket.OPEN && route) {
+        const updatedRoute = get().routes.find((r) => r.vehicle_id === routeId);
+        if (updatedRoute) {
+          const coords = updatedRoute.geometry?.geometry?.coordinates || [];
+          if (coords.length >= 2) {
+            state._wsRef.send(JSON.stringify({
+              type: 'reroute',
+              courier_id: `courier-${routeId}`,
+              coordinates: coords,
+              stops: getSimulationStops(updatedRoute, null),
+              route_source: 'applied',
+            }));
+          }
+        }
+      } else {
+        // Restart simulation with updated routes
+        get().stopSimulation();
+        setTimeout(() => get().startSimulation(), 300);
+      }
     } catch (err) {
       console.error('Failed to apply recommendation:', err);
+      set({ feedbackMessage: 'Failed to apply recommendation: ' + err.message, feedbackType: 'error' });
     }
   },
 
@@ -731,6 +811,7 @@ export const useRouteStore = create((set, get) => ({
       set({
         wsConnected: true,
         isConnecting: false,
+        simulationRunning: true,
         simulationRouteMode: vehicles.some((vehicle) => vehicle.route_source === 'scenario')
           ? 'scenario'
           : 'optimized',
@@ -827,7 +908,7 @@ export const useRouteStore = create((set, get) => ({
     };
 
     ws.onclose = () => {
-      set({ wsConnected: false, isConnecting: false, _wsRef: null, liveCouriers: {}, simulationRouteMode: 'optimized' });
+      set({ wsConnected: false, isConnecting: false, simulationRunning: false, _wsRef: null, liveCouriers: {}, simulationRouteMode: 'optimized' });
     };
 
     ws.onerror = (err) => {

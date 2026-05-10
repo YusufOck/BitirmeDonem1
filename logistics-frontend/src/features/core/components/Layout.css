@@ -135,9 +135,11 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   max-width: calc(100vw - 244px);
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 @media (max-width: 980px) {
@@ -148,11 +150,15 @@
   .sidebar {
     width: 100%;
     height: auto;
-    position: relative;
+    position: sticky;
+    top: 0;
     flex-direction: row;
     align-items: center;
-    gap: 1rem;
-    padding: 0.7rem;
+    gap: 0.5rem;
+    padding: 0.6rem 0.7rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+    z-index: 100;
   }
 
   .sidebar-header {
@@ -160,9 +166,32 @@
     padding: 0;
   }
 
+  .sidebar-header h2 {
+    display: none;
+  }
+
   .sidebar-nav {
     flex-direction: row;
+    flex: 1;
     justify-content: flex-end;
+    gap: 0.25rem;
+    overflow-x: auto;
+  }
+
+  .nav-link {
+    padding: 0.55rem 0.65rem;
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+
+  .nav-link span {
+    display: none;
+  }
+
+  .nav-link svg {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
   }
 
   .sidebar-footer {
@@ -171,8 +200,32 @@
 
   .main-content {
     max-width: 100vw;
-    height: auto;
-    min-height: calc(100vh - 70px);
-    overflow: visible;
+    min-height: calc(100vh - 56px);
+    overflow-y: auto;
+  }
+}
+
+@media (min-width: 981px) and (max-width: 1200px) {
+  .sidebar {
+    width: 56px;
+    padding: 0.75rem 0.5rem;
+    align-items: center;
+  }
+
+  .sidebar-header h2 {
+    display: none;
+  }
+
+  .nav-link span {
+    display: none;
+  }
+
+  .nav-link {
+    justify-content: center;
+    padding: 0.65rem;
+  }
+
+  .main-content {
+    max-width: calc(100vw - 56px);
   }
 }

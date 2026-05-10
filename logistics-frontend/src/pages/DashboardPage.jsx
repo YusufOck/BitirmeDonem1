@@ -2,7 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapViewer from '../features/dashboard/components/MapViewer';
 import { useRouteStore } from '../store/useRouteStore';
-import { PageHeader, MetricCard, RoutePicker, RouteMetricGrid, LoadingState, ErrorState } from '../components/shared';
+import { PageHeader, MetricCard, RoutePicker, LoadingState, ErrorState } from '../components/shared';
 
 const round = (v, d = 1) => {
   const n = Number(v);
@@ -11,56 +11,21 @@ const round = (v, d = 1) => {
 
 const LIFECYCLE_LABELS = {
   planned: 'Planned',
-  optimized_available: 'Optimized Available',
-  dispatched: 'Dispatched',
+  optimized_available: 'Ready to Dispatch',
+  dispatched: 'In Progress',
   in_progress: 'In Progress',
   recommendation_available: 'Recommendation Available',
   completed: 'Completed',
 };
 
-const LIFECYCLE_TONES = {
-  planned: 'neutral',
-  optimized_available: 'warning',
-  dispatched: 'success',
-  in_progress: 'success',
-  recommendation_available: 'warning',
-  completed: 'neutral',
+const LIFECYCLE_ICONS = {
+  planned: '📋',
+  optimized_available: '✅',
+  dispatched: '🚚',
+  in_progress: '🚚',
+  recommendation_available: '⚡',
+  completed: '🏁',
 };
-
-function OverviewMetricCards({ routes }) {
-  const totalStops = routes.reduce((sum, r) => sum + (r.metrics?.stopCount || r.stops?.length || 0), 0);
-  const highRiskCount = routes.reduce((sum, r) => sum + (r.metrics?.highRiskStops || 0), 0);
-  const totalDelay = routes.reduce((sum, r) => sum + (r.metrics?.expectedDelayMin || 0), 0);
-
-  return (
-    <div className="header-metrics">
-      <MetricCard label="Active routes" value={routes.length} />
-      <MetricCard label="Total stops" value={totalStops} />
-      <MetricCard
-        label="Delayed / at-risk"
-        value={`${round(totalDelay)} min`}
-        tone={totalDelay > 15 ? 'warning' : 'success'}
-        subvalue={highRiskCount > 0 ? `${highRiskCount} risky stops` : 'All clear'}
-      />
-    </div>
-  );
-}
-
-function NextActionHint({ status }) {
-  const hints = {
-    planned: 'Open Route Planner to run pre-dispatch optimization.',
-    optimized_available: 'Review the optimized route and Start Dispatch.',
-    dispatched: 'Open Live Monitor to track and respond to conditions.',
-    in_progress: 'Open Live Monitor to track and respond to conditions.',
-    recommendation_available: 'A route recommendation is available. Open Live Monitor to review.',
-    completed: 'Route is completed.',
-  };
-  return (
-    <div style={{ padding: '0.6rem 0.8rem', backgroundColor: '#fef3c7', borderRadius: '6px', border: '1px solid #fbbf24', fontSize: '0.85rem', color: '#92400e' }}>
-      <strong>Next action: </strong>{hints[status] || 'Select a route to begin.'}
-    </div>
-  );
-}
 
 export default function DashboardPage() {
   const navigate = useNavigate();
@@ -69,22 +34,22 @@ export default function DashboardPage() {
     routes, selectedCourierId, setSelectedCourier,
     liveCouriers, pendingSuggestions, handleSuggestionDecision,
     routeLifecycleByVehicleId, loadLifecycleState, startDispatch,
-    resetRouteLifecycle,
+    resetRouteLifecycle, feedbackMessage, feedbackType, clearFeedback,
+    simulationRunning,
   } = useRouteStore();
 
+  useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  useEffect(() => {
-    if (selectedCourierId !== null) {
-      loadLifecycleState(selectedCourierId);
-    }
+    if (selectedCourierId !== null) loadLifecycleState(selectedCourierId);
   }, [selectedCourierId, loadLifecycleState]);
 
   const liveCourierArray = useMemo(() => Object.values(liveCouriers || {}), [liveCouriers]);
   const selectedRoute = routes.find((r) => r.vehicle_id === selectedCourierId) || routes[0] || null;
   const currentStatus = selectedRoute ? routeLifecycleByVehicleId[selectedRoute.vehicle_id]?.status || 'planned' : 'planned';
+  const isDispatched = currentStatus === 'dispatched' || currentStatus === 'in_progress';
+
+  const totalStops = routes.reduce((sum, r) => sum + (r.metrics?.stopCount || r.stops?.length || 0), 0);
+  const totalDelay = routes.reduce((sum, r) => sum + (r.metrics?.expectedDelayMin || 0), 0);
 
   const routeList = routes.map((r) => ({
     id: r.vehicle_id,
@@ -113,34 +78,68 @@ export default function DashboardPage() {
     <div className="dashboard-container">
       <div className="dashboard-shell">
         <PageHeader
-          eyebrow="Logistics Command Center"
-          title="Operations Dashboard"
-          subtitle="Select a route to inspect, then proceed to optimization or live monitoring."
+          eyebrow="Operations control center"
+          title="Dispatch Dashboard"
+          subtitle="Select a route, then plan, dispatch, or monitor."
         >
-          <OverviewMetricCards routes={routes} />
+          <div className="header-metrics">
+            <MetricCard label="Routes" value={routes.length} />
+            <MetricCard label="Total stops" value={totalStops} />
+            <MetricCard
+              label="Total delay"
+              value={`${round(totalDelay)} min`}
+              tone={totalDelay > 15 ? 'warning' : 'success'}
+            />
+          </div>
         </PageHeader>
 
+        {/* Feedback banner */}
+        {feedbackMessage && (
+          <div className={`feedback-banner feedback-banner--${feedbackType}`}>
+            <span>{feedbackMessage}</span>
+            <button onClick={clearFeedback} aria-label="Dismiss">×</button>
+          </div>
+        )}
+
+        {/* Workflow explanation */}
+        <section className="page-card workflow-card">
+          <span className="panel-kicker">How it works</span>
+          <div className="workflow-steps-row">
+            <div className="workflow-chip">
+              <span className="workflow-num">1</span>
+              <div><strong>Plan</strong><small>Open Route Planner to optimize before dispatch.</small></div>
+            </div>
+            <div className="workflow-chip">
+              <span className="workflow-num">2</span>
+              <div><strong>Dispatch</strong><small>Start the courier. Live tracking begins.</small></div>
+            </div>
+            <div className="workflow-chip">
+              <span className="workflow-num">3</span>
+              <div><strong>Adapt</strong><small>Use Live Monitor to adjust when conditions change.</small></div>
+            </div>
+          </div>
+        </section>
+
         <div className="page-grid page-grid--overview">
+          {/* Route picker */}
           <section className="page-card">
-            <span className="panel-kicker">Routes</span>
-            <h2>Active courier routes</h2>
-            <p>Select a route to view on the map.</p>
-            <RoutePicker
-              routes={routeList}
-              selectedId={selectedCourierId}
-              onChange={setSelectedCourier}
-            />
+            <span className="panel-kicker">Courier routes</span>
+            <h2>Select a route</h2>
+            <RoutePicker routes={routeList} selectedId={selectedCourierId} onChange={setSelectedCourier} />
           </section>
 
+          {/* Map */}
           <section className="page-card page-card--map">
             <div className="section-title-row">
               <div>
                 <span className="panel-kicker">Route map</span>
                 <h2>{selectedRoute?.courierName || 'Select a route'}</h2>
               </div>
-              <small>Active route view</small>
+              {simulationRunning && (
+                <span className="live-pill live-pill--on"><span className="live-dot" /> Live</span>
+              )}
             </div>
-            <div className="map-frame" style={{ minHeight: '400px' }}>
+            <div className="map-frame map-frame--large">
               {selectedRoute ? (
                 <MapViewer
                   routes={routes}
@@ -150,68 +149,73 @@ export default function DashboardPage() {
                   handleSuggestionDecision={handleSuggestionDecision}
                   showScenario={false}
                   showAlternatives={false}
-                  showLiveCouriers={false}
+                  showLiveCouriers={simulationRunning}
                 />
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#f9fafb', color: '#6b7280', padding: '2rem', textAlign: 'center', borderRadius: '8px' }}>
-                  <p>No route selected. Please select an active route from the left panel to begin.</p>
+                <div className="empty-map-placeholder">
+                  <p>Select a route from the left panel to begin.</p>
                 </div>
               )}
             </div>
           </section>
 
+          {/* Status + Actions */}
           {selectedRoute && (
-            <aside className="page-card" style={{ display: 'flex', flexDirection: 'column' }}>
-              <span className="panel-kicker">Route Overview</span>
-              <h2>Selected route details</h2>
+            <aside className="page-card">
+              <span className="panel-kicker">Route status</span>
 
-              {/* Lifecycle Status Badge */}
-              <div style={{ marginTop: '0.8rem', padding: '0.8rem', backgroundColor: '#e0e7ff', borderRadius: '6px', border: '1px solid #c7d2fe' }}>
-                <div style={{ fontSize: '0.75rem', fontWeight: 'bold', textTransform: 'uppercase', color: '#4338ca', marginBottom: '4px' }}>Lifecycle Status</div>
-                <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#312e81' }}>
-                  {LIFECYCLE_LABELS[currentStatus] || currentStatus}
+              {/* Lifecycle badge */}
+              <div className="lifecycle-badge">
+                <span className="lifecycle-icon">{LIFECYCLE_ICONS[currentStatus] || '📋'}</span>
+                <div>
+                  <span className="lifecycle-label">Current status</span>
+                  <strong className="lifecycle-value">{LIFECYCLE_LABELS[currentStatus] || currentStatus}</strong>
                 </div>
               </div>
 
-              <NextActionHint status={currentStatus} />
-
-              <div style={{ marginTop: '0.8rem', flex: 1 }}>
-                <RouteMetricGrid route={selectedRoute} scenarioResult={null} />
+              {/* Quick metrics */}
+              <div className="metric-grid" style={{ marginTop: '0.8rem' }}>
+                <MetricCard label="Stops" value={selectedRoute.metrics?.stopCount || 0} />
+                <MetricCard
+                  label="Delay"
+                  value={`${round(selectedRoute.metrics?.expectedDelayMin || 0)} min`}
+                  tone={selectedRoute.metrics?.expectedDelayMin > 10 ? 'warning' : 'success'}
+                />
               </div>
 
-              {/* Quick Action Buttons */}
-              <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <button
-                  className="control-btn control-btn--primary control-btn--full"
-                  onClick={() => navigate('/optimization')}
-                >
-                  Open Route Planner
-                </button>
+              {/* Next action hint */}
+              <div className="next-action-hint">
+                {currentStatus === 'planned' && 'Open Route Planner to optimize, then start dispatch.'}
+                {currentStatus === 'optimized_available' && 'Route is optimized. Start dispatch when ready.'}
+                {(currentStatus === 'dispatched' || currentStatus === 'in_progress') && 'Courier is en route. Open Live Monitor to track and adapt.'}
+                {currentStatus === 'recommendation_available' && 'A new recommendation is available. Open Live Monitor to review.'}
+                {currentStatus === 'completed' && 'Route is completed.'}
+              </div>
 
+              {/* Action buttons */}
+              <div className="action-stack">
                 {(currentStatus === 'planned' || currentStatus === 'optimized_available') && (
-                  <button
-                    className="control-btn control-btn--full"
-                    style={{ backgroundColor: '#10b981', color: 'white', border: 'none', padding: '0.8rem', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                    onClick={handleStartDispatch}
-                  >
-                    Start Dispatch
+                  <>
+                    <button className="control-btn control-btn--primary control-btn--full" onClick={() => navigate('/optimization')}>
+                      Open Route Planner
+                    </button>
+                    <button className="control-btn control-btn--full dispatch-btn" onClick={handleStartDispatch}>
+                      Start Dispatch
+                    </button>
+                  </>
+                )}
+                {isDispatched && (
+                  <button className="control-btn control-btn--primary control-btn--full" onClick={() => navigate('/scenarios')}>
+                    Open Live Monitor
                   </button>
                 )}
-
-                <button
-                  className="control-btn control-btn--full"
-                  style={{ backgroundColor: '#6366f1', color: 'white', border: 'none', padding: '0.8rem', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                  onClick={() => navigate('/scenarios')}
-                >
-                  Open Live Monitor
-                </button>
-
-                {(currentStatus === 'dispatched' || currentStatus === 'in_progress' || currentStatus === 'completed') && (
-                  <button
-                    className="control-btn control-btn--full"
-                    style={{ backgroundColor: '#6b7280', color: 'white', border: 'none', padding: '0.8rem', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}
-                    onClick={handleResetLifecycle}
-                  >
+                {currentStatus === 'recommendation_available' && (
+                  <button className="control-btn control-btn--primary control-btn--full" onClick={() => navigate('/scenarios')}>
+                    Review Recommendation
+                  </button>
+                )}
+                {(isDispatched || currentStatus === 'completed') && (
+                  <button className="control-btn control-btn--neutral control-btn--full" onClick={handleResetLifecycle} style={{ fontSize: '0.78rem' }}>
                     Reset to Planned (Demo)
                   </button>
                 )}

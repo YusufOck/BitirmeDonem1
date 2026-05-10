@@ -158,7 +158,7 @@ export function RouteOrderComparison({ baseline, scenario }) {
   const hasResult = after.length > 0;
 
   return (
-    <div className="order-comparison" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+    <div className="order-comparison">
       <div style={{ backgroundColor: '#f9fafb', padding: '1rem', borderRadius: '8px' }}>
         <span className="panel-kicker">Before optimization</span>
         <h3 style={{ marginBottom: '0.5rem' }}>Original order ({before.length} stops)</h3>
