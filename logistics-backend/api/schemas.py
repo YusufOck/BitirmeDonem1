@@ -200,6 +200,26 @@ class OptimizedStop(BaseModel):
     delay_probability: float = Field(..., description="Cascade-adjusted delay probability (0-1)")
     expected_delay_min: float = Field(..., description="P50 expected delay (minutes)")
     delay_p90_min: float | None = Field(None, description="P90 worst-case delay (minutes)")
+    ml_delay_min: float | None = Field(
+        default=None,
+        description="Raw ML delay estimate before route-order ETA effects.",
+    )
+    leg_travel_min: float | None = Field(
+        default=None,
+        description="Road travel time from previous route node to this stop under the evaluated matrix.",
+    )
+    arrival_eta_min: float | None = Field(
+        default=None,
+        description="Cumulative arrival ETA from depot to this stop under the evaluated order.",
+    )
+    schedule_delay_min: float | None = Field(
+        default=None,
+        description="Extra lateness caused by reaching this stop after its slack/window budget.",
+    )
+    operational_delay_min: float | None = Field(
+        default=None,
+        description="Comparable per-stop delay metric: ML delay plus ETA/window lateness.",
+    )
     calibration_applied: bool = Field(default=False, description="True when runtime road-condition safety calibration raised delay/risk")
     calibration_reasons: list[str] = Field(default_factory=list, description="Signals that caused runtime safety calibration")
     will_miss_window: bool
@@ -506,6 +526,13 @@ class ScenarioReoptimizationResponse(BaseModel):
     baseline_summary: RouteSummary
     scenario_summary: RouteSummary
     baseline_route: list[OptimizedStop]
+    current_order_route: list[OptimizedStop] = Field(
+        default_factory=list,
+        description=(
+            "Remaining stops in the current active order, rescored under the same scenario conditions. "
+            "Use this as the before route when comparing a recommendation."
+        ),
+    )
     scenario_route: list[OptimizedStop]
     baseline_geometry: RouteGeometry
     scenario_geometry: RouteGeometry
@@ -520,6 +547,11 @@ class ScenarioReoptimizationResponse(BaseModel):
     sequence_before: list[str | None]
     sequence_after: list[str | None]
     explanation: str
+    recommendation_allowed: bool = True
+    recommendation_status: Literal["recommended", "keep_current", "infeasible"] = "recommended"
+    recommendation_reason: str = ""
+    optimization_delta: dict = Field(default_factory=dict)
+    schedule_comparison: dict = Field(default_factory=dict)
     mapbox_alternatives: list[dict] = Field(default_factory=list)
 
 

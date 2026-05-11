@@ -151,11 +151,135 @@ export function RouteValidationBanner({ plannedStops, resultStops, label = 'Opti
 
 // ── Route Order Comparison ───────────────────────────────────────────────────
 
+const stopLabel = (stop, fallback) => stop?.stop_name || stop?.name || stop?.stop_id || `Stop ${fallback}`;
+const stopDelay = (stop) => round(
+  stop?.operational_delay_min
+  ?? stop?.schedule_delay_min
+  ?? stop?.expected_delay_min
+  ?? stop?.delay_min
+  ?? 0,
+  1,
+);
+const stopAliases = (stop = {}) => {
+  const aliases = new Set();
+  [stop.stop_id, stop.id, stop.stop_name, stop.name, stop.source_stop_id].forEach((value) => {
+    if (value === null || value === undefined) return;
+    const raw = String(value).trim();
+    if (!raw) return;
+    aliases.add(raw);
+    const match = raw.match(/(\d+)$/);
+    if (match) {
+      aliases.add(match[1]);
+      aliases.add(String(Number(match[1])));
+    }
+  });
+  return aliases;
+};
+
+const findMatchedStop = (stops, candidate) => {
+  const candidateAliases = stopAliases(candidate);
+  return (stops || []).find((stop) => {
+    const aliases = stopAliases(stop);
+    return [...candidateAliases].some((alias) => aliases.has(alias));
+  });
+};
+
+export function DelayImprovementPanel({ baseline, scenario }) {
+  const before = Array.isArray(scenario?.current_order_route) && scenario.current_order_route.length
+    ? scenario.current_order_route
+    : (baseline || []);
+  const after = Array.isArray(scenario?.scenario_route) ? scenario.scenario_route : [];
+  if (!after.length) return null;
+
+  const optimizationDelta = scenario?.optimization_delta || {};
+  const scheduleComparison = scenario?.schedule_comparison || {};
+  const beforeTotal = round(
+    optimizationDelta.current_operational_delay_min
+    ?? scheduleComparison.current_order?.total_operational_delay_min
+    ?? scenario?.baseline_metrics?.expected_delay_min
+    ?? before.reduce((sum, stop) => sum + stopDelay(stop), 0),
+    1,
+  );
+  const afterTotal = round(
+    optimizationDelta.optimized_operational_delay_min
+    ?? scheduleComparison.optimized_order?.total_operational_delay_min
+    ?? scenario?.scenario_metrics?.expected_delay_min
+    ?? after.reduce((sum, stop) => sum + stopDelay(stop), 0),
+    1,
+  );
+  const saved = round(
+    optimizationDelta.operational_delay_saved_min
+    ?? scheduleComparison.saved_min
+    ?? (beforeTotal - afterTotal),
+    1,
+  );
+  const isAllowed = scenario?.recommendation_allowed !== false && saved > 0;
+  const rows = after.map((optimizedStop, index) => {
+    const originalStop = findMatchedStop(before, optimizedStop);
+    const beforeDelay = stopDelay(originalStop);
+    const afterDelay = stopDelay(optimizedStop);
+    return {
+      key: `${optimizedStop.stop_id || optimizedStop.stop_name || index}-${index}`,
+      label: stopLabel(optimizedStop, index + 1),
+      beforeDelay,
+      afterDelay,
+      delta: round(beforeDelay - afterDelay, 1),
+    };
+  });
+  const improvedCount = rows.filter((row) => row.delta > 0).length;
+
+  return (
+    <div className="delay-proof-panel">
+      {!isAllowed && (
+        <div className="info-banner info-banner--amber" style={{ marginBottom: '0.75rem', fontSize: '0.82rem' }}>
+          No better route was found under the updated conditions. Keep the current route instead of applying this analysis.
+        </div>
+      )}
+      <div className="metric-grid">
+        <MetricCard label="Current route delay-risk" value={`${beforeTotal} min`} subvalue="same updated conditions" tone="warning" />
+        <MetricCard label="Recommended route delay-risk" value={`${afterTotal} min`} subvalue="same updated conditions" tone="blue" />
+        <MetricCard
+          label={saved > 0 ? 'Delay-risk saved' : 'No useful saving'}
+          value={`${saved > 0 ? '-' : saved < 0 ? '+' : ''}${Math.abs(saved)} min`}
+          subvalue={saved > 0 ? 'applicable benefit' : saved < 0 ? 'recommendation is worse' : 'keep current route'}
+          tone={saved > 0 ? 'success' : 'warning'}
+        />
+        <MetricCard label="Stops improved" value={`${improvedCount}/${after.length}`} subvalue="same per-stop delay-risk metric" tone="cyan" />
+      </div>
+      <div className="table-shell table-shell--compact" style={{ marginTop: '0.75rem' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Stop</th>
+              <th>Before delay</th>
+              <th>After delay</th>
+              <th>Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.key}>
+                <td><strong>{row.label}</strong></td>
+                <td>{row.beforeDelay} min</td>
+                <td>{row.afterDelay} min</td>
+                <td>
+                  <span className={`risk-pill risk-pill--${row.delta > 0 ? 'low' : row.delta < 0 ? 'medium' : 'high'}`}>
+                    {row.delta > 0 ? `-${row.delta} min` : row.delta < 0 ? `+${Math.abs(row.delta)} min` : '0 min'}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function RouteOrderComparison({ baseline, scenario }) {
-  // Always use the baseline prop (remainingStops from parent) as the "before" source.
-  // Do NOT use scenario?.baseline_route which comes from the backend and may include
-  // a different stop count than the current remaining stops.
-  const before = baseline || [];
+  const before = Array.isArray(scenario?.current_order_route) && scenario.current_order_route.length
+    ? scenario.current_order_route
+    : (baseline || []);
   // Fix: scenario_route may be an array; do NOT fallback to scenario object
   const after = Array.isArray(scenario?.scenario_route) ? scenario.scenario_route : [];
   const hasResult = after.length > 0;

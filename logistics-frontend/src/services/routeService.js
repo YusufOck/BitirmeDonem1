@@ -16,7 +16,8 @@ const formatApiErrorDetail = (detail, fallback) => {
     const unknownStops = detail.unknown_stop_ids?.length
       ? ` Unknown stops: ${detail.unknown_stop_ids.join(', ')}.`
       : '';
-    return `${detail.message}.${validationErrors}${unknownStops}`.replace('..', '.');
+    const reason = detail.reason ? ` Reason: ${detail.reason}.` : '';
+    return `${detail.message}.${validationErrors}${unknownStops}${reason}`.replace('..', '.');
   }
   try {
     return JSON.stringify(detail);

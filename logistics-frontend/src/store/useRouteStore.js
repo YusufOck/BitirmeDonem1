@@ -334,6 +334,7 @@ const normalizeScenarioResult = (result, vehicleId, route = null) => {
     baselineGeometry: asFeature(result.baseline_geometry),
     scenarioGeometry,
     baseline_route: alignScenarioStopsWithRoute(result.baseline_route || [], routeStops),
+    current_order_route: alignScenarioStopsWithRoute(result.current_order_route || result.baseline_route || [], routeStops),
     scenario_route: orderStopsByRouteProgress(alignedScenarioRoute, scenarioGeometry),
     mapboxAlternatives: (result.mapbox_alternatives || []).map((alternative) => ({
       ...alternative,
@@ -684,7 +685,7 @@ export const useRouteStore = create((set, get) => ({
   agentExplanationError: null,
 
   requestAgentExplanation: async (payload) => {
-    set({ agentExplanationLoading: true, agentExplanationError: null });
+    set({ agentExplanation: null, agentExplanationLoading: true, agentExplanationError: null });
 
     // No frontend timeout — the backend has its own 120s timeout.
     // Deterministic explanation is shown immediately via scenarioResult.
@@ -782,7 +783,12 @@ export const useRouteStore = create((set, get) => ({
         completed_stop_ids: validation.completedIds,
         recommended_stop_ids: validation.recommendedStopIds,
         scenario_geometry: scenarioResult?.scenarioGeometry?.geometry || null,
-        scenario_summary: scenarioResult?.scenario_summary || scenarioResult?.scenarioSummary || null,
+        scenario_summary: {
+          ...(scenarioResult?.scenario_summary || scenarioResult?.scenarioSummary || {}),
+          recommendation_allowed: scenarioResult?.recommendation_allowed !== false,
+          recommendation_status: scenarioResult?.recommendation_status || 'recommended',
+          optimization_delta: scenarioResult?.optimization_delta || null,
+        },
       });
 
       // Build updated routes — MERGE completed stops with scenario route
@@ -1258,6 +1264,14 @@ export const useRouteStore = create((set, get) => ({
     if (_wsRef && (_wsRef.readyState === WebSocket.OPEN || _wsRef.readyState === WebSocket.CONNECTING)) {
       _wsRef.close();
     }
+    set({
+      wsConnected: false,
+      isConnecting: false,
+      simulationRunning: false,
+      simulationVehicleId: null,
+      _wsRef: null,
+      liveCouriers: {},
+    });
   },
 
   handleSuggestionDecision: async (vehicleId, suggestionId, action) => {

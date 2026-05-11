@@ -16,7 +16,9 @@ OLLAMA_GENERATION_ENABLED = os.getenv("OLLAMA_GENERATION_ENABLED", "true").strip
 }
 
 def generate_deterministic_explanation(metrics: Dict[str, Any], conditions: Dict[str, Any], order_changed: bool) -> str:
-    delay_delta = metrics.get("after", {}).get("expected_delay_min", 0.0) - metrics.get("before", {}).get("expected_delay_min", 0.0)
+    before_delay = float(metrics.get("before", {}).get("expected_delay_min", 0.0) or 0.0)
+    after_delay = float(metrics.get("after", {}).get("expected_delay_min", 0.0) or 0.0)
+    delay_delta = after_delay - before_delay
     order_text = "changed the stop order" if order_changed else "kept the same stop order"
     
     cond_texts = []
@@ -29,10 +31,17 @@ def generate_deterministic_explanation(metrics: Dict[str, Any], conditions: Dict
         
     cond_str = ", ".join(cond_texts) if cond_texts else "standard conditions"
     
+    if delay_delta < 0:
+        delay_text = f"reduced expected delay by {abs(delay_delta):.1f} min ({before_delay:.1f} -> {after_delay:.1f} min)"
+    elif delay_delta > 0:
+        delay_text = f"limited the scenario impact, but expected delay increased by {delay_delta:.1f} min ({before_delay:.1f} -> {after_delay:.1f} min)"
+    else:
+        delay_text = f"kept expected delay stable at {after_delay:.1f} min"
+
     return (
         f"The scenario was evaluated using ML delay features for {cond_str}. "
         f"OR-Tools {order_text} to minimize total cost. "
-        f"Expected delay changed by {delay_delta:+.1f} min."
+        f"The recommendation {delay_text}."
     )
 
 def generate_ai_explanation(prompt: str) -> Dict[str, Any]:
@@ -118,8 +127,14 @@ def process_recommendation(
     # 3. AI Generation — keep prompt MINIMAL for CPU-based Ollama performance
     context_text = "\n".join([c["content"][:200] for c in retriever_grade.get("relevant_chunks", [])[:1]])
     
+    before_delay = float(metrics.get("before", {}).get("expected_delay_min", 0.0) or 0.0)
+    after_delay = float(metrics.get("after", {}).get("expected_delay_min", 0.0) or 0.0)
+    direction = "reduced/saved" if backend_facts["delay_delta_min"] < 0 else ("increased" if backend_facts["delay_delta_min"] > 0 else "unchanged")
+    traffic_value = int(conditions.get("traffic_density", 0) or 0)
+    traffic_label = "heavy" if traffic_value >= 70 else ("moderate" if traffic_value >= 35 else "light")
     prompt = f"""Explain this logistics route change in 2 sentences.
-Delay: {backend_facts['delay_delta_min']:+.1f}min. Order changed: {order_changed}. Conditions: traffic={conditions.get('traffic_density',0)}, weather={conditions.get('weather_severity',0)}.
+Delay before={before_delay:.1f}min, after={after_delay:.1f}min, delta={backend_facts['delay_delta_min']:+.1f}min. Negative delta means delay was reduced/saved; positive delta means delay increased. Correct direction: {direction}. Order changed: {order_changed}. Conditions: traffic={traffic_value}/100 ({traffic_label}), weather={conditions.get('weather_severity',0)}/100.
+Use only these numbers. Do not call heavy traffic favorable. Do not invent accidents, weather, or benefits not shown above.
 {('Context: ' + context_text) if context_text else ''}
 Answer:"""
     gen_result = generate_ai_explanation(prompt)

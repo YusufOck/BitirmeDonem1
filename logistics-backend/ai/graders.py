@@ -39,10 +39,15 @@ def grade_hallucination(ai_text: str, backend_facts: Dict[str, Any]) -> Dict[str
     
     # 1. Delay contradiction check
     delay_delta = backend_facts.get("delay_delta_min", 0.0)
-    if delay_delta > 0 and ("decreased" in ai_text_lower or "reduced" in ai_text_lower) and "delay" in ai_text_lower:
+    increase_terms = ("increased", "increase", "introduced", "added", "higher", "worse", "grew", "more delay")
+    decrease_terms = ("decreased", "decrease", "reduced", "reduce", "saved", "lower", "improved", "less delay")
+    claims_increase = any(term in ai_text_lower for term in increase_terms)
+    claims_decrease = any(term in ai_text_lower for term in decrease_terms)
+
+    if delay_delta > 0 and claims_decrease and "delay" in ai_text_lower:
         issues.append("AI claims delay decreased, but backend shows it increased.")
         risk = "high"
-    elif delay_delta < 0 and ("increased" in ai_text_lower) and "delay" in ai_text_lower:
+    elif delay_delta < 0 and claims_increase and "delay" in ai_text_lower:
         issues.append("AI claims delay increased, but backend shows it decreased.")
         risk = "high"
 

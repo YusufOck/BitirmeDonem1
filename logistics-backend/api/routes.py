@@ -35,6 +35,7 @@ from api.schemas import (
     VehicleRoute,
 )
 from optimization.route_optimizer import RouteOptimizer
+from optimization.scoring import score_leg
 from optimization.mapbox_adapter import mapbox_to_pipeline
 from mapbox.matrix_api import get_weight_matrices
 from mapbox.directions_api import get_final_route, get_route_alternatives
@@ -406,28 +407,206 @@ def _route_metrics(route_data: dict, result: dict) -> dict:
     }
 
 
+def _matrix_leg_minutes(
+    from_node: int,
+    to_node: int,
+    stops_data: list[dict],
+    travel_time_matrix: list[list[float]],
+) -> float:
+    """Return road travel minutes between depot/node ids used by the optimizer."""
+    if from_node == to_node:
+        return 0.0
+    if to_node == 0:
+        if from_node <= 0 or from_node > len(stops_data):
+            return 0.0
+        return float(stops_data[from_node - 1].get("stop_to_depot_travel_min") or 0.0)
+    if from_node == 0:
+        if to_node <= 0 or to_node > len(stops_data):
+            return 0.0
+        stop = stops_data[to_node - 1]
+        return float(stop.get("depot_to_stop_travel_min") or stop.get("planned_travel_min") or 0.0)
+    return float(travel_time_matrix[from_node - 1][to_node - 1] or 0.0)
+
+
+def _route_from_node_order(
+    stops_data: list[dict],
+    stop_predictions: list[dict],
+    node_order: list[int],
+    vehicle_id: int = 0,
+) -> list[dict]:
+    """Build an OptimizedStop-compatible route for an explicit stop-node order."""
+    route: list[dict] = []
+    for delivery_position, node_index in enumerate(node_order):
+        stop_idx = int(node_index) - 1
+        if stop_idx < 0 or stop_idx >= len(stops_data):
+            continue
+        original_stop = stops_data[stop_idx]
+        ml_pred = stop_predictions[stop_idx] if stop_idx < len(stop_predictions) else {}
+        route.append({
+            "optimized_position": delivery_position,
+            "vehicle_id": vehicle_id,
+            "original_stop_index": stop_idx,
+            "stop_id": original_stop.get("stop_id"),
+            "stop_name": original_stop.get("stop_name"),
+            "latitude": original_stop.get("latitude"),
+            "longitude": original_stop.get("longitude"),
+            "stop_sequence": original_stop.get("stop_sequence"),
+            "planned_travel_min": original_stop.get("planned_travel_min"),
+            "time_window_slack_min": original_stop.get("time_window_slack_min", 60.0),
+            "feature_source": original_stop.get("feature_source"),
+            "road_type": original_stop.get("road_type"),
+            "traffic_level": original_stop.get("traffic_level"),
+            "weather_condition": original_stop.get("weather_condition"),
+            "congestion_ratio_mean": original_stop.get("congestion_ratio_mean"),
+            "road_incident": original_stop.get("road_incident"),
+            "incident_severity": original_stop.get("incident_severity"),
+            "precipitation_mm": original_stop.get("precipitation_mm"),
+            "wind_speed_kmh": original_stop.get("wind_speed_kmh"),
+            "visibility_km": original_stop.get("visibility_km"),
+            "package_count": original_stop.get("package_count"),
+            "package_weight_kg": original_stop.get("package_weight_kg"),
+            "delay_factors": deepcopy(original_stop.get("delay_factors", [])),
+            "delay_probability": float(ml_pred.get("delay_probability") or 0.0),
+            "expected_delay_min": float(ml_pred.get("expected_delay_min") or 0.0),
+            "delay_p90_min": ml_pred.get("delay_p90_min"),
+            "calibration_applied": bool(ml_pred.get("calibration_applied", False)),
+            "calibration_reasons": list(ml_pred.get("calibration_reasons", [])),
+            "will_miss_window": bool(ml_pred.get("will_miss_window", False)),
+            "risk_level": ml_pred.get("risk_level") or "low",
+            "severity": ml_pred.get("severity") or "on-time",
+        })
+    return route
+
+
+def _annotate_route_operational_cost(
+    route: list[dict],
+    stops_data: list[dict],
+    stop_predictions: list[dict],
+    travel_time_matrix: list[list[float]],
+    use_p90: bool = False,
+) -> tuple[list[dict], dict]:
+    """
+    Score a route order under one exact set of road conditions.
+
+    The old UI compared route-level OR-Tools cost with raw per-stop ML delay,
+    which could say "saved" while most stop rows looked worse.  This helper
+    creates one comparable metric for both totals and rows: road leg cost +
+    ML delay/risk penalties + ETA/window lateness under the evaluated order.
+    """
+    ordered = sorted(route, key=lambda stop: (stop.get("vehicle_id", 0), stop.get("optimized_position", 0)))
+    annotated: list[dict] = []
+    previous_node = 0
+    elapsed_min = 0.0
+    total_operational = 0.0
+    total_ml_delay = 0.0
+    total_travel = 0.0
+    late_stop_count = 0
+
+    for position, stop in enumerate(ordered):
+        node = int(stop.get("original_stop_index", position)) + 1
+        stop_idx = node - 1
+        base_travel = _matrix_leg_minutes(previous_node, node, stops_data, travel_time_matrix)
+        prediction = stop_predictions[stop_idx] if 0 <= stop_idx < len(stop_predictions) else {}
+        destination_stop = stops_data[stop_idx] if 0 <= stop_idx < len(stops_data) else stop
+        leg_cost = score_leg(
+            from_node=previous_node,
+            to_node=node,
+            base_travel_min=base_travel,
+            destination_stop=destination_stop,
+            destination_prediction=prediction,
+            use_p90=use_p90,
+        ).to_dict()
+
+        elapsed_min += float(leg_cost["base_travel_min"])
+        ml_delay = float(leg_cost["predicted_delay_min"])
+        slack = float(stop.get("time_window_slack_min") or destination_stop.get("time_window_slack_min") or 480.0)
+        schedule_delay = max(0.0, (elapsed_min + ml_delay) - slack)
+        operational_delay = float(leg_cost["total_cost_min"]) + schedule_delay
+
+        row = deepcopy(stop)
+        row["optimized_position"] = position
+        row["planned_travel_min"] = round(float(leg_cost["base_travel_min"]), 1)
+        row["leg_travel_min"] = round(float(leg_cost["base_travel_min"]), 1)
+        row["arrival_eta_min"] = round(elapsed_min, 1)
+        row["ml_delay_min"] = round(ml_delay, 1)
+        row["schedule_delay_min"] = round(schedule_delay, 1)
+        row["operational_delay_min"] = round(operational_delay, 1)
+        row["cost_breakdown"] = leg_cost
+        annotated.append(row)
+
+        total_operational += operational_delay
+        total_ml_delay += ml_delay
+        total_travel += float(leg_cost["base_travel_min"])
+        if schedule_delay > 0.1:
+            late_stop_count += 1
+        elapsed_min += ml_delay
+        previous_node = node
+
+    return_travel = _matrix_leg_minutes(previous_node, 0, stops_data, travel_time_matrix)
+    summary = {
+        "total_operational_delay_min": round(total_operational, 1),
+        "total_ml_delay_min": round(total_ml_delay, 1),
+        "total_travel_min": round(total_travel, 1),
+        "return_to_depot_min": round(return_travel, 1),
+        "route_cost_with_return_min": round(total_operational + return_travel, 1),
+        "late_stop_count": late_stop_count,
+    }
+    return annotated, summary
+
+
 def _scenario_explanation(
     controls,
     baseline_metrics: dict,
     scenario_metrics: dict,
     order_changed: bool,
     segment_override_count: int = 0,
+    optimization_delta: dict | None = None,
+    recommendation_allowed: bool = True,
 ) -> str:
     delay_delta = scenario_metrics["expected_delay_min"] - baseline_metrics["expected_delay_min"]
     time_delta = scenario_metrics["duration_min"] - baseline_metrics["duration_min"]
     order_text = "changed the stop order" if order_changed else "kept the same stop order"
+    optimization_delta = optimization_delta or {}
+    saved_cost = float(
+        optimization_delta.get("operational_delay_saved_min")
+        if optimization_delta.get("operational_delay_saved_min") is not None
+        else optimization_delta.get("improvement_min")
+        or 0.0
+    )
+    before_cost = (
+        optimization_delta.get("current_operational_delay_min")
+        if optimization_delta.get("current_operational_delay_min") is not None
+        else optimization_delta.get("original_cost_min")
+    )
+    after_cost = (
+        optimization_delta.get("optimized_operational_delay_min")
+        if optimization_delta.get("optimized_operational_delay_min") is not None
+        else optimization_delta.get("optimized_cost_min")
+    )
     segment_text = (
         f" {segment_override_count} manually edited segment penalties were also applied to the route matrix."
         if segment_override_count
         else ""
     )
+    if recommendation_allowed:
+        decision_text = (
+            f"Under the same updated road conditions, keeping the current order costs {before_cost:.1f} min "
+            f"of operational delay-risk and the optimized order costs {after_cost:.1f} min, saving {saved_cost:.1f} min."
+            if before_cost is not None and after_cost is not None
+            else f"The optimized order saves {saved_cost:.1f} min of operational delay-risk."
+        )
+    else:
+        decision_text = (
+            "The recalculation did not find a route that is materially better than the current order, "
+            "so this result should be kept as analysis only and not applied."
+        )
     return (
         f"The scenario was evaluated with the trained ML delay model, not by a visual shortcut. "
         f"Traffic density {controls.traffic_density}/100, accident severity {controls.accident_severity}/100, "
         f"{controls.weather_condition} weather at {controls.weather_severity}/100 intensity, and road disruption "
         f"{controls.road_disruption}/100 were converted into model features. OR-Tools then {order_text} using "
-        f"the updated ML delay costs and Mapbox road-time matrix.{segment_text} Expected delay changed by {delay_delta:+.1f} min "
-        f"and road duration changed by {time_delta:+.1f} min."
+        f"the updated ML delay costs and Mapbox road-time matrix.{segment_text} {decision_text} "
+        f"Raw ML delay changed by {delay_delta:+.1f} min and road duration changed by {time_delta:+.1f} min compared with the previous conditions."
     )
 
 
@@ -865,8 +1044,30 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
         1,
     )
 
+    scenario_predictions = scenario_result.get("ml_predictions", {}).get("stop_predictions", [])
+    current_order_route = _route_from_node_order(
+        scenario_stops,
+        scenario_predictions,
+        list(range(1, len(scenario_stops) + 1)),
+    )
+    current_order_route, current_schedule_summary = _annotate_route_operational_cost(
+        current_order_route,
+        scenario_stops,
+        scenario_predictions,
+        scenario_matrix,
+        use_p90=body.controls.conservative_mode,
+    )
+    optimized_order_route, optimized_schedule_summary = _annotate_route_operational_cost(
+        scenario_result["optimized_route"],
+        scenario_stops,
+        scenario_predictions,
+        scenario_matrix,
+        use_p90=body.controls.conservative_mode,
+    )
+    scenario_result["optimized_route"] = optimized_order_route
+
     baseline_coords = _coords_from_route(
-        baseline_result["optimized_route"],
+        current_order_route,
         body.depot_latitude,
         body.depot_longitude,
     )
@@ -899,9 +1100,94 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
             "source": "mapbox_directions_alternative",
         })
 
-    baseline_metrics = _route_metrics(baseline_route_data, baseline_result)
+    baseline_metrics = _route_metrics(baseline_route_data, scenario_result)
     scenario_metrics = _route_metrics(scenario_route_data, scenario_result)
-    sequence_before = [stop.get("stop_name") for stop in baseline_result["optimized_route"]]
+    baseline_metrics.update({
+        "expected_delay_min": current_schedule_summary["total_operational_delay_min"],
+        "ml_delay_min": current_schedule_summary["total_ml_delay_min"],
+        "travel_time_min": current_schedule_summary["total_travel_min"],
+        "late_stop_count": current_schedule_summary["late_stop_count"],
+        "comparison_basis": "current_order_under_updated_conditions",
+    })
+    scenario_metrics.update({
+        "expected_delay_min": optimized_schedule_summary["total_operational_delay_min"],
+        "ml_delay_min": optimized_schedule_summary["total_ml_delay_min"],
+        "travel_time_min": optimized_schedule_summary["total_travel_min"],
+        "late_stop_count": optimized_schedule_summary["late_stop_count"],
+        "comparison_basis": "optimized_order_under_updated_conditions",
+    })
+    scenario_comparison = scenario_result.get("optimization_comparison") or {}
+    raw_cost_improvement_min = round(float(scenario_comparison.get("improvement_min") or 0.0), 1)
+    operational_improvement_min = round(
+        current_schedule_summary["total_operational_delay_min"]
+        - optimized_schedule_summary["total_operational_delay_min"],
+        1,
+    )
+
+    current_by_id = {
+        str(stop.get("stop_id") or stop.get("stop_name") or stop.get("original_stop_index")): stop
+        for stop in current_order_route
+    }
+    improved_stop_count = 0
+    worsened_stop_count = 0
+    unchanged_stop_count = 0
+    for stop in optimized_order_route:
+        key = str(stop.get("stop_id") or stop.get("stop_name") or stop.get("original_stop_index"))
+        before = current_by_id.get(key)
+        if not before:
+            continue
+        before_delay = float(before.get("operational_delay_min") or 0.0)
+        after_delay = float(stop.get("operational_delay_min") or 0.0)
+        if after_delay < before_delay - 0.1:
+            improved_stop_count += 1
+        elif after_delay > before_delay + 0.1:
+            worsened_stop_count += 1
+        else:
+            unchanged_stop_count += 1
+
+    raw_original_cost = round(float(scenario_comparison.get("original_cost_min") or 0.0), 1)
+    raw_optimized_cost = round(float(scenario_comparison.get("optimized_cost_min") or 0.0), 1)
+    optimization_delta = {
+        "original_cost_min": raw_original_cost,
+        "optimized_cost_min": raw_optimized_cost,
+        "improvement_min": raw_cost_improvement_min,
+        "improvement_pct": round(float(scenario_comparison.get("improvement_pct") or 0.0), 2),
+        "current_operational_delay_min": current_schedule_summary["total_operational_delay_min"],
+        "optimized_operational_delay_min": optimized_schedule_summary["total_operational_delay_min"],
+        "operational_delay_saved_min": operational_improvement_min,
+        "improved_stop_count": improved_stop_count,
+        "worsened_stop_count": worsened_stop_count,
+        "unchanged_stop_count": unchanged_stop_count,
+        "comparison_basis": "same_updated_conditions",
+    }
+    no_dropped_stops = not scenario_result.get("vrp_result", {}).get("dropped_nodes")
+    enough_stop_level_benefit = improved_stop_count >= max(1, worsened_stop_count)
+    recommendation_allowed = (
+        scenario_comparison.get("status") == "improved"
+        and raw_cost_improvement_min > 0.1
+        and operational_improvement_min > 0.1
+        and enough_stop_level_benefit
+        and no_dropped_stops
+    )
+    recommendation_status = "recommended" if recommendation_allowed else "keep_current"
+    if recommendation_allowed:
+        recommendation_reason = (
+            f"Recommended because the optimized order saves {operational_improvement_min:.1f} min of operational delay-risk "
+            f"under the same updated conditions and improves {improved_stop_count}/{len(optimized_order_route)} stops."
+        )
+    elif not no_dropped_stops:
+        recommendation_reason = "No recommendation: the solver dropped at least one required remaining stop."
+    elif operational_improvement_min <= 0.1:
+        recommendation_reason = (
+            "No recommendation: the recalculated route does not reduce operational delay-risk under the same updated conditions."
+        )
+    elif not enough_stop_level_benefit:
+        recommendation_reason = (
+            "No recommendation: the route-level score improved, but too many individual stops would become worse."
+        )
+    else:
+        recommendation_reason = "No recommendation: the recalculated route is not materially better than keeping the current order."
+    sequence_before = [stop.get("stop_name") for stop in current_order_route]
     sequence_after = [stop.get("stop_name") for stop in scenario_result["optimized_route"]]
     order_changed = sequence_before != sequence_after
 
@@ -913,11 +1199,20 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
         "high_risk_stops": scenario_metrics["high_risk_stops"] - baseline_metrics["high_risk_stops"],
         "severe_stops": scenario_metrics["severe_stops"] - baseline_metrics["severe_stops"],
     }
+    schedule_comparison = {
+        "current_order": current_schedule_summary,
+        "optimized_order": optimized_schedule_summary,
+        "saved_min": operational_improvement_min,
+        "improved_stop_count": improved_stop_count,
+        "worsened_stop_count": worsened_stop_count,
+        "unchanged_stop_count": unchanged_stop_count,
+    }
 
     return ScenarioReoptimizationResponse(
         baseline_summary=baseline_result["route_summary"],
         scenario_summary=scenario_result["route_summary"],
-        baseline_route=baseline_result["optimized_route"],
+        baseline_route=current_order_route,
+        current_order_route=current_order_route,
         scenario_route=scenario_result["optimized_route"],
         baseline_geometry=baseline_route_data["geometry"],
         scenario_geometry=scenario_route_data["geometry"],
@@ -925,7 +1220,7 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
         scenario_metrics=scenario_metrics,
         delta=delta,
         baseline_comparison=baseline_result.get("optimization_comparison"),
-        scenario_comparison=scenario_result.get("optimization_comparison"),
+        scenario_comparison=scenario_comparison,
         factor_impacts=factor_impacts,
         controls_applied=body.controls,
         order_changed=order_changed,
@@ -937,7 +1232,14 @@ async def scenario_reoptimize(body: ScenarioRouteRequest) -> ScenarioReoptimizat
             scenario_metrics,
             order_changed,
             len(body.segment_overrides),
+            optimization_delta,
+            recommendation_allowed,
         ),
+        recommendation_allowed=recommendation_allowed,
+        recommendation_status=recommendation_status,
+        recommendation_reason=recommendation_reason,
+        optimization_delta=optimization_delta,
+        schedule_comparison=schedule_comparison,
         mapbox_alternatives=mapbox_alternatives,
     )
 
@@ -1247,6 +1549,11 @@ def apply_recommendation(
         })
 
     if body_for_apply is not None:
+        if body_for_apply.scenario_summary and body_for_apply.scenario_summary.get("recommendation_allowed") is False:
+            raise HTTPException(status_code=422, detail={
+                "message": "Recommendation was not applied because the optimizer did not find a better route",
+                "reason": body_for_apply.scenario_summary.get("recommendation_status", "keep_current"),
+            })
         if route is not None and body_for_apply.recommended_stop_ids:
             completed = set(str(item) for item in body_for_apply.completed_stop_ids)
             stop_by_id = {str(stop.id): stop for stop in db_stops}

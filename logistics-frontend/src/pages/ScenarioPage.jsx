@@ -4,7 +4,7 @@ import { useRouteStore } from '../store/useRouteStore';
 import {
   PageHeader, MetricCard, RouteMetricGrid, RoutePicker,
   RouteOrderComparison, RouteValidationBanner, SegmentEditor,
-  AgentExplanationPanel, LoadingState, ErrorState,
+  AgentExplanationPanel, DelayImprovementPanel, LoadingState, ErrorState,
 } from '../components/shared';
 
 const SCENARIO_SLIDERS = [
@@ -132,15 +132,23 @@ export default function ScenarioPage() {
       || useRouteStore.getState().scenarioResult;
 
     if (sr) {
+      const beforeDelay = sr.optimization_delta?.current_operational_delay_min
+        ?? sr.schedule_comparison?.current_order?.total_operational_delay_min
+        ?? sr.baseline_metrics?.expected_delay_min
+        ?? remainingStops.reduce((sum, stop) => sum + Number(stop.expected_delay_min || 0), 0);
+      const afterDelay = sr.optimization_delta?.optimized_operational_delay_min
+        ?? sr.schedule_comparison?.optimized_order?.total_operational_delay_min
+        ?? sr.scenario_metrics?.expected_delay_min
+        ?? (sr.scenario_route || []).reduce((sum, stop) => sum + Number(stop.expected_delay_min || 0), 0);
       requestAgentExplanation({
         route_id: selectedRoute.vehicle_id,
         route_state: currentLifecycle,
         scenario_conditions: activeControls,
-        before_metrics: { expected_delay_min: selectedRoute.metrics?.expectedDelayMin || 0 },
-        after_metrics: { expected_delay_min: (selectedRoute.metrics?.expectedDelayMin || 0) + (sr.delta?.expected_delay_min || 0) },
+        before_metrics: { expected_delay_min: beforeDelay },
+        after_metrics: { expected_delay_min: afterDelay },
         stop_order_before: remainingStops.map((s) => s.stop_name || s.stop_id || ''),
         stop_order_after: (sr.scenario_route || []).map((s) => s.stop_name || s.stop_id || ''),
-        user_question: 'Why was the route changed?',
+        user_question: 'Why is this recommendation useful, or why should we keep the current route?',
       }).catch(() => { /* AI explanation is supplementary */ });
     }
   }, [selectedRoute, currentLifecycle, activeControls, remainingStops, runScenario, requestAgentExplanation]);
@@ -163,16 +171,18 @@ export default function ScenarioPage() {
   const recommendedStops = activeScenarioResult?.scenario_route || [];
 
   // Strict validation: recommendation must contain exactly the remaining stops
+  const recommendationAllowed = !hasRecommendation || activeScenarioResult?.recommendation_allowed !== false;
   const recommendationValid = !hasRecommendation || (() => {
     const rIds = new Set(remainingStops.map((s) => String(s.stop_id)).filter(Boolean));
     const sIds = new Set(recommendedStops.map((s) => String(s.stop_id || s.stop_name)).filter(Boolean));
     // Check both directions: no missing AND no unexpected stops
     const allPresent = [...rIds].every((id) => sIds.has(id));
     const noExtra = [...sIds].every((id) => rIds.has(id));
-    return allPresent && noExtra && rIds.size === sIds.size;
+    return recommendationAllowed && allPresent && noExtra && rIds.size === sIds.size;
   })();
   const validationMissing = hasRecommendation ? remainingStops.filter((s) => !new Set(recommendedStops.map((r) => String(r.stop_id || r.stop_name))).has(String(s.stop_id))) : [];
   const validationExtra = hasRecommendation ? recommendedStops.filter((s) => !new Set(remainingStops.map((r) => String(r.stop_id))).has(String(s.stop_id || s.stop_name))) : [];
+  const applyBlocked = !recommendationValid || agentExplanationLoading;
 
   return (
     <div className="dashboard-container">
@@ -377,6 +387,11 @@ export default function ScenarioPage() {
         {hasRecommendation && (
           <div className="responsive-results-grid">
             <section className="page-card">
+              <span className="panel-kicker">Delay proof before apply</span>
+              <h2>Delay improvement</h2>
+              <DelayImprovementPanel baseline={remainingStops} scenario={activeScenarioResult} />
+            </section>
+            <section className="page-card">
               <span className="panel-kicker">Stop order comparison</span>
               <h2>Remaining: before vs after ({remainingStops.length} → {recommendedStops.length})</h2>
               <RouteOrderComparison baseline={remainingStops} scenario={activeScenarioResult} />
@@ -388,7 +403,12 @@ export default function ScenarioPage() {
               {activeScenarioResult?.delta && (
                 <div className="metric-grid" style={{ marginBottom: '1rem' }}>
                   <MetricCard label="Travel delta" value={`${activeScenarioResult.delta.travel_time_min != null ? (activeScenarioResult.delta.travel_time_min > 0 ? '+' : '') + activeScenarioResult.delta.travel_time_min : '--'} min`} />
-                  <MetricCard label="Delay delta" value={`${activeScenarioResult.delta.expected_delay_min != null ? (activeScenarioResult.delta.expected_delay_min > 0 ? '+' : '') + activeScenarioResult.delta.expected_delay_min : '--'} min`} />
+                  <MetricCard
+                    label="Optimization saving"
+                    value={`${activeScenarioResult.optimization_delta?.operational_delay_saved_min != null ? (activeScenarioResult.optimization_delta.operational_delay_saved_min > 0 ? '-' : activeScenarioResult.optimization_delta.operational_delay_saved_min < 0 ? '+' : '') + Math.abs(activeScenarioResult.optimization_delta.operational_delay_saved_min) : '--'} min`}
+                    subvalue="same updated conditions"
+                    tone={activeScenarioResult.recommendation_allowed === false ? 'warning' : 'success'}
+                  />
                   <MetricCard label="Order changed" value={activeScenarioResult.order_changed ? 'Yes' : 'No'} tone={activeScenarioResult.order_changed ? 'warning' : 'success'} />
                 </div>
               )}
@@ -417,11 +437,17 @@ export default function ScenarioPage() {
                 <button
                   className="control-btn dispatch-btn"
                   onClick={handleApplyRecommendation}
-                  disabled={!recommendationValid}
+                  disabled={applyBlocked}
                   title={!recommendationValid ? `Route validation failed. ${validationMissing.length > 0 ? `Missing: ${validationMissing.map(s => s.stop_id).join(', ')}. ` : ''}${validationExtra.length > 0 ? `Unexpected: ${validationExtra.map(s => s.stop_id || s.stop_name).join(', ')}.` : ''}` : ''}
-                  style={{ flex: 1, opacity: recommendationValid ? 1 : 0.5 }}
+                  style={{ flex: 1, opacity: applyBlocked ? 0.5 : 1 }}
                 >
-                  {recommendationValid ? 'Apply Recommendation' : 'Apply Blocked — Validation Failed'}
+                  {agentExplanationLoading
+                    ? 'Waiting for AI Explanation'
+                    : !recommendationAllowed
+                      ? 'No Better Route - Keep Current'
+                      : recommendationValid
+                      ? 'Apply Recommendation'
+                      : 'Apply Blocked - Validation Failed'}
                 </button>
                 <button className="control-btn control-btn--neutral" onClick={handleKeepCurrentRoute} style={{ flex: 1 }}>
                   Keep Current Route
