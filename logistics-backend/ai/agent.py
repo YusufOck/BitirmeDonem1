@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "8"))
+OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))
+OLLAMA_GENERATION_ENABLED = os.getenv("OLLAMA_GENERATION_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 def generate_deterministic_explanation(metrics: Dict[str, Any], conditions: Dict[str, Any], order_changed: bool) -> str:
     delay_delta = metrics.get("after", {}).get("expected_delay_min", 0.0) - metrics.get("before", {}).get("expected_delay_min", 0.0)
@@ -42,8 +45,16 @@ def generate_ai_explanation(prompt: str) -> Dict[str, Any]:
         "ollama_url_used": url,
         "ollama_model_used": OLLAMA_MODEL,
         "generation_error": "",
-        "ai_generation_attempted": True,
+        "generation_skipped_reason": "",
+        "ai_generation_attempted": False,
     }
+    if not OLLAMA_GENERATION_ENABLED:
+        result["generation_skipped_reason"] = (
+            "Ollama generation is disabled by default; deterministic backend explanation is used."
+        )
+        return result
+
+    result["ai_generation_attempted"] = True
     try:
         logger.info(f"Calling Ollama at {url} with model {OLLAMA_MODEL}")
         resp = requests.post(
@@ -54,10 +65,10 @@ def generate_ai_explanation(prompt: str) -> Dict[str, Any]:
                 "stream": False,
                 "options": {
                     "temperature": 0.1,
-                    "num_predict": 60,    # Short output for speed
-                    "num_ctx": 512,       # Minimal context window for CPU speed
+                    "num_predict": 90,    # Brief but useful dispatcher-facing answer
+                    "num_ctx": 768,       # Keep prompt small while allowing grounding facts
                 },
-                "keep_alive": "10m",       # Keep model loaded for 10 min
+                "keep_alive": "30m",       # Keep model warm between scenario tests
             },
             timeout=OLLAMA_TIMEOUT_SECONDS,
         )
@@ -120,15 +131,20 @@ Answer:"""
         hallucination_grade = grade_hallucination(ai_exp, backend_facts)
         answer_grade = grade_answer(ai_exp)
     else:
-        generation_status = "failed"
-        # Do NOT call this hallucination — it's a generation failure
+        generation_status = "failed" if gen_result["ai_generation_attempted"] else "skipped"
+        # Do NOT call this hallucination; it is a generation failure or an
+        # intentional skip when deterministic explanation is enough.
+        issue = (
+            gen_result.get("generation_skipped_reason")
+            or "AI generation failed or returned empty; cannot evaluate hallucination without text."
+        )
         hallucination_grade = {
             "hallucination_risk": "not_applicable",
             "should_answer": False,
-            "detected_issues": ["AI generation failed or returned empty — cannot evaluate hallucination without text."],
+            "detected_issues": [issue],
             "safe_fallback_explanation": None,
         }
-        answer_grade = {"pass": False, "score": 0.0, "feedback": "No AI text generated to evaluate."}
+        answer_grade = {"pass": False, "score": 0.0, "feedback": issue}
         
     # 5. Output Contract
     fallback_used = not hallucination_grade["should_answer"] or not answer_grade["pass"]
@@ -147,6 +163,7 @@ Answer:"""
         # Diagnostics metadata (TASK 3)
         "generation_status": generation_status,
         "generation_error": gen_result["generation_error"],
+        "generation_skipped_reason": gen_result.get("generation_skipped_reason", ""),
         "ollama_url_used": gen_result["ollama_url_used"],
         "ollama_model_used": gen_result["ollama_model_used"],
         "ai_generation_attempted": gen_result["ai_generation_attempted"],

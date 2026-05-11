@@ -1,4 +1,5 @@
-from api.routes import ApplyRecommendationRequest, _validate_recommendation_payload
+from api.routes import ApplyRecommendationRequest, _resolve_route_stop_ids, _validate_recommendation_payload
+from api.simulation_routes import _build_cumulative, _order_stops_by_route_progress
 from ml.inference import predict_route
 from optimization.scoring import score_leg
 from optimization.vrp_solver import solve_vrp
@@ -133,3 +134,40 @@ def test_recommendation_validation_rejects_completed_or_unexpected_stops():
     assert missing_and_unexpected["valid"] is False
     assert missing_and_unexpected["missing_stop_ids"] == ["C"]
     assert missing_and_unexpected["unexpected_stop_ids"] == ["X"]
+
+
+def test_recommendation_stop_aliases_resolve_to_route_stop_ids():
+    class DummyStop:
+        def __init__(self, stop_id, name):
+            self.id = stop_id
+            self.name = name
+
+    db_stops = [
+        DummyStop(1581, "STP-00001"),
+        DummyStop(1582, "STP-00002"),
+        DummyStop(1583, "STP-00003"),
+    ]
+
+    resolved, unknown = _resolve_route_stop_ids(db_stops, ["3", "STP-00001", "1582"])
+
+    assert unknown == []
+    assert resolved == ["1583", "1581", "1582"]
+
+
+def test_simulation_orders_next_stops_by_route_geometry_progress():
+    coords = [
+        [37.000, 39.000],
+        [37.010, 39.000],
+        [37.020, 39.000],
+        [37.030, 39.000],
+    ]
+    cumulative = _build_cumulative(coords)
+    shuffled_stops = [
+        {"stop_id": "far", "lat": 39.000, "lon": 37.030},
+        {"stop_id": "near", "lat": 39.000, "lon": 37.010},
+        {"stop_id": "middle", "lat": 39.000, "lon": 37.020},
+    ]
+
+    ordered = _order_stops_by_route_progress(coords, cumulative, shuffled_stops)
+
+    assert [stop["stop_id"] for stop in ordered] == ["near", "middle", "far"]

@@ -1,9 +1,9 @@
 """
 Demo simulation WebSocket.
 
-Couriers move along the road geometry sent by the frontend. If the user runs a
-new road-condition scenario while the simulation is live, the frontend sends a
-reroute message and the courier continues on the new scenario route.
+Couriers move along the active road geometry sent by the frontend. Road-condition
+recalculation only produces a pending recommendation; the frontend sends a
+reroute message after the user applies that recommendation.
 
 Stop-completion detection uses proximity radius. The default 0.20 km (200 m)
 is appropriate for the Sivas dataset where Mapbox road geometry follows road
@@ -73,6 +73,30 @@ def _find_stop_dist_on_route(coords: list, cum: list[float], stop_lat: float, st
             min_d = d
             best_cum = cum[i]
     return best_cum
+
+
+def _stop_lat_lon(stop: dict) -> tuple[float | None, float | None]:
+    stop_lat = stop.get("lat", stop.get("latitude"))
+    stop_lon = stop.get("lon", stop.get("longitude"))
+    try:
+        return float(stop_lat), float(stop_lon)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _order_stops_by_route_progress(coords: list, cum: list[float], stops: list) -> list:
+    """Sort future stops by where they appear on the route geometry."""
+    ordered = []
+    for index, stop in enumerate(stops or []):
+        stop_lat, stop_lon = _stop_lat_lon(stop)
+        if stop_lat is None or stop_lon is None:
+            progress_km = float("inf")
+        else:
+            progress_km = _find_stop_dist_on_route(coords, cum, stop_lat, stop_lon)
+        next_stop = dict(stop)
+        next_stop["route_progress_km"] = progress_km if math.isfinite(progress_km) else None
+        ordered.append((progress_km, index, next_stop))
+    return [stop for _, _, stop in sorted(ordered, key=lambda item: (item[0], item[1]))]
 
 
 def _interpolate(coords: list, cum: list[float], target_km: float) -> tuple[float, float, float]:
@@ -174,7 +198,7 @@ async def simulation_ws(ws: WebSocket):
                 "coords": coords,
                 "cum": cum,
                 "total_km": cum[-1],
-                "stops": vehicle.get("stops", []),
+                "stops": _order_stops_by_route_progress(coords, cum, vehicle.get("stops", [])),
                 "dist_km": 0.0,
                 "visited_stops": set(),
                 "next_stop_index": 0,
@@ -212,7 +236,7 @@ async def simulation_ws(ws: WebSocket):
                             route["total_km"],
                         )
                         if isinstance(msg.get("stops"), list):
-                            route["stops"] = msg["stops"]
+                            route["stops"] = _order_stops_by_route_progress(new_coords, new_cum, msg["stops"])
                             # Reset ordered index — the visited_stops set
                             # is preserved so already-completed stops stay done.
                             route["next_stop_index"] = 0

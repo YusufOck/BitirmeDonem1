@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -1138,6 +1139,37 @@ def _validate_recommendation_payload(body: ApplyRecommendationRequest | None) ->
         "unexpected_stop_ids": unexpected,
     }
 
+
+def _stop_aliases(stop: Stop) -> set[str]:
+    """Return every stable identifier that may refer to the same route stop."""
+    aliases = {str(stop.id)}
+    if stop.name:
+        name = str(stop.name)
+        aliases.add(name)
+        match = re.search(r"(\d+)$", name)
+        if match:
+            aliases.add(match.group(1))
+            aliases.add(str(int(match.group(1))))
+    return aliases
+
+
+def _resolve_route_stop_ids(db_stops: list[Stop], raw_ids: list[str]) -> tuple[list[str], list[str]]:
+    """Resolve scenario/StopPool aliases to the concrete Stop.id values for this route."""
+    alias_to_stop: dict[str, Stop] = {}
+    for stop in db_stops:
+        for alias in _stop_aliases(stop):
+            alias_to_stop[alias] = stop
+
+    resolved: list[str] = []
+    unknown: list[str] = []
+    for raw_id in raw_ids:
+        stop = alias_to_stop.get(str(raw_id))
+        if stop is None:
+            unknown.append(str(raw_id))
+        else:
+            resolved.append(str(stop.id))
+    return resolved, unknown
+
 def _get_lifecycle_state(route_id: int) -> dict:
     if route_id not in _route_lifecycle_state:
         _route_lifecycle_state[route_id] = {
@@ -1180,24 +1212,45 @@ def apply_recommendation(
     db: Session = Depends(get_db),
 ):
     state = _get_lifecycle_state(id)
-    validation = _validate_recommendation_payload(body)
+    route = db.get(Route, id) if body is not None else None
+    db_stops: list[Stop] = []
+    body_for_apply = body
+
+    if body is not None and route is not None:
+        db_stops = (
+            db.query(Stop)
+            .filter(Stop.route_id == id)
+            .all()
+        )
+        resolved_active, unknown_active = _resolve_route_stop_ids(db_stops, body.active_stop_ids)
+        resolved_completed, unknown_completed = _resolve_route_stop_ids(db_stops, body.completed_stop_ids)
+        resolved_recommended, unknown_recommended = _resolve_route_stop_ids(db_stops, body.recommended_stop_ids)
+        unknown = sorted(set(unknown_active + unknown_completed + unknown_recommended))
+        if unknown:
+            raise HTTPException(status_code=422, detail={
+                "message": "Recommendation includes stops that do not belong to this route",
+                "unknown_stop_ids": unknown,
+            })
+        body_for_apply = ApplyRecommendationRequest(
+            active_stop_ids=resolved_active,
+            completed_stop_ids=resolved_completed,
+            recommended_stop_ids=resolved_recommended,
+            scenario_geometry=body.scenario_geometry,
+            scenario_summary=body.scenario_summary,
+        )
+
+    validation = _validate_recommendation_payload(body_for_apply)
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail={
             "message": "Recommendation validation failed",
             "validation": validation,
         })
 
-    if body is not None:
-        route = db.get(Route, id)
-        if route is not None and body.recommended_stop_ids:
-            completed = set(str(item) for item in body.completed_stop_ids)
-            db_stops = (
-                db.query(Stop)
-                .filter(Stop.route_id == id)
-                .all()
-            )
+    if body_for_apply is not None:
+        if route is not None and body_for_apply.recommended_stop_ids:
+            completed = set(str(item) for item in body_for_apply.completed_stop_ids)
             stop_by_id = {str(stop.id): stop for stop in db_stops}
-            unknown = [sid for sid in body.recommended_stop_ids if str(sid) not in stop_by_id]
+            unknown = [sid for sid in body_for_apply.recommended_stop_ids if str(sid) not in stop_by_id]
             if unknown:
                 raise HTTPException(status_code=422, detail={
                     "message": "Recommendation includes stops that do not belong to this route",
@@ -1210,7 +1263,7 @@ def apply_recommendation(
                     stop.status = StopStatus.completed
                     completed_count += 1
 
-            for position, stop_id in enumerate(body.recommended_stop_ids, start=completed_count + 1):
+            for position, stop_id in enumerate(body_for_apply.recommended_stop_ids, start=completed_count + 1):
                 stop = stop_by_id[str(stop_id)]
                 if str(stop.id) in completed:
                     raise HTTPException(status_code=422, detail={
@@ -1226,12 +1279,12 @@ def apply_recommendation(
 
     state["status"] = "in_progress"
     state["applied_recommendation"] = True
-    if body is not None:
-        state["active_stop_ids"] = [str(item) for item in body.active_stop_ids]
-        state["completed_stop_ids"] = [str(item) for item in body.completed_stop_ids]
-        state["current_sequence"] = [str(item) for item in body.recommended_stop_ids]
-        state["scenario_geometry"] = body.scenario_geometry
-        state["scenario_summary"] = body.scenario_summary
+    if body_for_apply is not None:
+        state["active_stop_ids"] = [str(item) for item in body_for_apply.active_stop_ids]
+        state["completed_stop_ids"] = [str(item) for item in body_for_apply.completed_stop_ids]
+        state["current_sequence"] = [str(item) for item in body_for_apply.recommended_stop_ids]
+        state["scenario_geometry"] = body_for_apply.scenario_geometry
+        state["scenario_summary"] = body_for_apply.scenario_summary
         state["validation"] = validation
     state["last_transition"] = "recommendation_applied"
     return state

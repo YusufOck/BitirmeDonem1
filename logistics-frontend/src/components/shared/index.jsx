@@ -322,17 +322,13 @@ export function AgentExplanationPanel({ explanation, loading, error }) {
     return (
       <div style={{ padding: '1rem', backgroundColor: '#eff6ff', borderRadius: '6px', border: '1px solid #bfdbfe', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
         <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', backgroundColor: '#3b82f6', animation: 'pulse 1.5s infinite' }} />
-        <span style={{ color: '#1e40af', fontSize: '0.85rem' }}>Generating AI explanation via Ollama LLM…</span>
+        <span style={{ color: '#1e40af', fontSize: '0.85rem' }}>Preparing optional AI assistant note...</span>
       </div>
     );
   }
 
   if (error) {
-    return (
-      <div style={{ padding: '0.6rem 0.8rem', backgroundColor: '#fef3c7', borderRadius: '6px', border: '1px solid #fbbf24', fontSize: '0.8rem', color: '#92400e' }}>
-        <strong>AI explanation unavailable:</strong> {error}
-      </div>
-    );
+    return null;
   }
 
   if (!explanation) return null;
@@ -353,14 +349,6 @@ export function AgentExplanationPanel({ explanation, loading, error }) {
         </div>
       )}
 
-      {/* Fallback warning */}
-      {explanation.fallback_used && (
-        <div style={{ padding: '0.6rem 0.8rem', backgroundColor: '#fef3c7', borderRadius: '6px', border: '1px solid #fbbf24', fontSize: '0.8rem', color: '#92400e' }}>
-          AI explanation was blocked or unavailable; deterministic explanation is shown.
-          {explanation.generation_error && <span style={{ display: 'block', marginTop: '4px', fontSize: '0.75rem' }}>Reason: {explanation.generation_error}</span>}
-        </div>
-      )}
-
       {/* Technical details accordion */}
       <button
         onClick={() => setShowTechnical(!showTechnical)}
@@ -373,6 +361,12 @@ export function AgentExplanationPanel({ explanation, loading, error }) {
         <div style={{ padding: '0.8rem', backgroundColor: '#f9fafb', borderRadius: '6px', fontSize: '0.8rem', color: '#374151' }}>
           <div><strong>Generation status:</strong> {explanation.generation_status}</div>
           <div><strong>Ollama model:</strong> {explanation.ollama_model_used || '—'}</div>
+          {explanation.generation_skipped_reason && (
+            <div><strong>Generation skipped:</strong> {explanation.generation_skipped_reason}</div>
+          )}
+          {explanation.generation_error && (
+            <div><strong>Generation diagnostic:</strong> {explanation.generation_error}</div>
+          )}
           <div><strong>Retriever grade:</strong> {explanation.retriever_grade?.pass ? 'Pass' : 'Fail'} (score: {explanation.retriever_grade?.score})</div>
           <div><strong>Hallucination grade:</strong> {explanation.hallucination_grade?.hallucination_risk}</div>
           <div><strong>Answer grade:</strong> {explanation.answer_grade?.pass ? 'Pass' : 'Fail'} (score: {explanation.answer_grade?.score})</div>

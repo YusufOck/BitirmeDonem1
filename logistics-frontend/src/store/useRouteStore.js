@@ -147,6 +147,57 @@ const getStatusTone = (status) => {
 
 const asFeature = (geometry) => (geometry ? { type: 'Feature', geometry } : null);
 
+const normalizeStopToken = (value) => {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const tokens = new Set([raw]);
+  const match = raw.match(/(\d+)$/);
+  if (match) {
+    tokens.add(match[1]);
+    tokens.add(String(Number(match[1])));
+  }
+  return tokens;
+};
+
+const getStopAliases = (stop = {}) => {
+  const aliases = new Set();
+  [
+    stop.stop_id,
+    stop.id,
+    stop.stop_name,
+    stop.name,
+    stop.source_stop_id,
+  ].forEach((value) => {
+    const tokens = normalizeStopToken(value);
+    if (tokens) tokens.forEach((token) => aliases.add(token));
+  });
+  return aliases;
+};
+
+const findMatchingRouteStop = (routeStops = [], candidate = {}) => {
+  const candidateAliases = getStopAliases(candidate);
+  if (candidateAliases.size === 0) return null;
+  return routeStops.find((routeStop) => {
+    const routeAliases = getStopAliases(routeStop);
+    return [...candidateAliases].some((alias) => routeAliases.has(alias));
+  }) || null;
+};
+
+const alignScenarioStopsWithRoute = (scenarioStops = [], routeStops = []) => (
+  (scenarioStops || []).map((stop) => {
+    const match = findMatchingRouteStop(routeStops, stop);
+    if (!match) return stop;
+    return {
+      ...match,
+      ...stop,
+      stop_id: match.stop_id,
+      stop_name: stop.stop_name || match.stop_name,
+      source_stop_id: stop.stop_id,
+    };
+  })
+);
+
 const serializeStopForScenario = (stop, index) => ({
   stop_sequence: Number(stop.stop_sequence || stop.displaySequence || index + 1),
   cumulative_delay_min: Number(stop.cumulative_delay_min || 0),
@@ -189,16 +240,107 @@ const getScenarioCoordinates = (scenarioResult) => (
   scenarioResult?.scenarioGeometry?.geometry?.coordinates || []
 );
 
-const normalizeScenarioResult = (result, vehicleId) => ({
-  ...result,
-  vehicleId,
-  baselineGeometry: asFeature(result.baseline_geometry),
-  scenarioGeometry: asFeature(result.scenario_geometry),
-  mapboxAlternatives: (result.mapbox_alternatives || []).map((alternative) => ({
-    ...alternative,
-    geometry: asFeature(alternative.geometry),
-  })),
-});
+const haversineKm = (lat1, lon1, lat2, lon2) => {
+  const radiusKm = 6371;
+  const toRad = (value) => (Number(value) * Math.PI) / 180;
+  const aLat = toRad(lat1);
+  const bLat = toRad(lat2);
+  const dLat = toRad(Number(lat2) - Number(lat1));
+  const dLon = toRad(Number(lon2) - Number(lon1));
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(aLat) * Math.cos(bLat) * Math.sin(dLon / 2) ** 2;
+  return radiusKm * 2 * Math.asin(Math.sqrt(a));
+};
+
+const buildRouteCumulativeKm = (coords = []) => {
+  const cumulative = [0];
+  for (let index = 1; index < coords.length; index += 1) {
+    cumulative.push(
+      cumulative[index - 1]
+      + haversineKm(coords[index - 1][1], coords[index - 1][0], coords[index][1], coords[index][0]),
+    );
+  }
+  return cumulative;
+};
+
+const projectStopProgressKm = (coords = [], cumulative = [], stop = {}) => {
+  if (!Array.isArray(coords) || coords.length < 2) return Number.POSITIVE_INFINITY;
+  const stopLat = Number(stop.latitude ?? stop.lat);
+  const stopLon = Number(stop.longitude ?? stop.lon);
+  if (!Number.isFinite(stopLat) || !Number.isFinite(stopLon)) return Number.POSITIVE_INFINITY;
+
+  const refLatRad = (stopLat * Math.PI) / 180;
+  const toLocalKm = ([lon, lat]) => ([
+    (Number(lon) - stopLon) * 111.32 * Math.cos(refLatRad),
+    (Number(lat) - stopLat) * 110.574,
+  ]);
+
+  let bestDistanceSq = Number.POSITIVE_INFINITY;
+  let bestProgressKm = cumulative[0] || 0;
+  for (let index = 0; index < coords.length - 1; index += 1) {
+    const [ax, ay] = toLocalKm(coords[index]);
+    const [bx, by] = toLocalKm(coords[index + 1]);
+    const vx = bx - ax;
+    const vy = by - ay;
+    const denom = vx * vx + vy * vy;
+    const t = denom === 0 ? 0 : Math.max(0, Math.min(1, -((ax * vx + ay * vy) / denom)));
+    const px = ax + t * vx;
+    const py = ay + t * vy;
+    const distanceSq = px * px + py * py;
+    if (distanceSq < bestDistanceSq) {
+      bestDistanceSq = distanceSq;
+      bestProgressKm = (cumulative[index] || 0) + ((cumulative[index + 1] || 0) - (cumulative[index] || 0)) * t;
+    }
+  }
+  return bestProgressKm;
+};
+
+const orderStopsByRouteProgress = (stops = [], geometryFeature) => {
+  const coords = geometryFeature?.geometry?.coordinates || [];
+  if (!Array.isArray(coords) || coords.length < 2) return stops;
+  const cumulative = buildRouteCumulativeKm(coords);
+  return [...stops]
+    .map((stop, originalIndex) => ({
+      ...stop,
+      _routeProgressKm: projectStopProgressKm(coords, cumulative, stop),
+      _originalIndex: originalIndex,
+    }))
+    .sort((a, b) => (
+      (a._routeProgressKm - b._routeProgressKm)
+      || (Number(a.optimized_position || 0) - Number(b.optimized_position || 0))
+      || (a._originalIndex - b._originalIndex)
+    ))
+    .map((stop, index) => {
+      const routeProgressKm = stop._routeProgressKm;
+      const cleanStop = { ...stop };
+      delete cleanStop._routeProgressKm;
+      delete cleanStop._originalIndex;
+      return {
+        ...cleanStop,
+        optimized_position: index,
+        displaySequence: index + 1,
+        route_progress_km: Number.isFinite(routeProgressKm) ? round(routeProgressKm, 3) : null,
+      };
+    });
+};
+
+const normalizeScenarioResult = (result, vehicleId, route = null) => {
+  const scenarioGeometry = asFeature(result.scenario_geometry);
+  const routeStops = route?.stops || [];
+  const alignedScenarioRoute = alignScenarioStopsWithRoute(result.scenario_route || [], routeStops);
+  return {
+    ...result,
+    vehicleId,
+    baselineGeometry: asFeature(result.baseline_geometry),
+    scenarioGeometry,
+    baseline_route: alignScenarioStopsWithRoute(result.baseline_route || [], routeStops),
+    scenario_route: orderStopsByRouteProgress(alignedScenarioRoute, scenarioGeometry),
+    mapboxAlternatives: (result.mapbox_alternatives || []).map((alternative) => ({
+      ...alternative,
+      geometry: asFeature(alternative.geometry),
+    })),
+  };
+};
 
 const getControlsForRoute = (state, vehicleId) => {
   if (vehicleId === null || vehicleId === undefined) return state.scenarioControls || DEFAULT_SCENARIO_CONTROLS;
@@ -294,7 +436,10 @@ const validateScenarioForApply = (route, scenarioResult, completedStopIds = new 
   const completedIds = [...completedStopIds].map(String);
   const remainingIds = activeStopIds.filter((stopId) => !completedIds.includes(stopId));
   const recommendedStopIds = getOrderedScenarioStops(scenarioResult)
-    .map((stop) => String(stop.stop_id))
+    .map((stop) => {
+      const match = findMatchingRouteStop(route.stops || [], stop);
+      return String(match?.stop_id ?? stop.stop_id);
+    })
     .filter(Boolean);
 
   const duplicateRecommended = recommendedStopIds.filter(
@@ -356,6 +501,7 @@ export const useRouteStore = create((set, get) => ({
   _wsRef: null,
   isConnecting: false,
   simulationRunning: false,
+  simulationVehicleId: null,
   simulationRouteMode: 'optimized',
   feedbackMessage: null,
   feedbackType: 'info',
@@ -486,27 +632,22 @@ export const useRouteStore = create((set, get) => ({
       const segmentOverrides = normalizeSegmentOverrides(
         activeSegmentOverrides,
       );
+      const liveCourier = state.liveCouriers[`courier-${selectedRoute.vehicle_id}`];
+      const liveLocation = Array.isArray(liveCourier?.location) ? liveCourier.location : null;
+      const routeStart = liveLocation && Number.isFinite(Number(liveLocation[0])) && Number.isFinite(Number(liveLocation[1]))
+        ? {
+          depot_latitude: Number(liveLocation[1]),
+          depot_longitude: Number(liveLocation[0]),
+        }
+        : DEFAULT_DEPOT;
       const result = await fetchScenarioReoptimization({
-        ...DEFAULT_DEPOT,
+        ...routeStart,
         stops: remainingStops.map(serializeStopForScenario),
         controls,
         segment_overrides: segmentOverrides,
         time_limit_seconds: 15,
       });
-      const normalizedResult = normalizeScenarioResult(result, selectedRoute.vehicle_id);
-
-      if (state.wsConnected && state._wsRef?.readyState === WebSocket.OPEN) {
-        const coordinates = getScenarioCoordinates(normalizedResult);
-        if (coordinates.length >= 2) {
-          state._wsRef.send(JSON.stringify({
-            type: 'reroute',
-            courier_id: `courier-${selectedRoute.vehicle_id}`,
-            coordinates,
-            stops: getSimulationStops(selectedRoute, normalizedResult),
-            route_source: 'scenario',
-          }));
-        }
-      }
+      const normalizedResult = normalizeScenarioResult(result, selectedRoute.vehicle_id, selectedRoute);
 
       set({
         scenarioResult: selectedRoute.vehicle_id === get().selectedCourierId
@@ -517,7 +658,7 @@ export const useRouteStore = create((set, get) => ({
           [selectedRoute.vehicle_id]: normalizedResult,
         },
         scenarioLoading: false,
-        simulationRouteMode: state.wsConnected ? 'scenario' : state.simulationRouteMode,
+        simulationRouteMode: state.simulationRouteMode,
       });
     } catch (error) {
       set({
@@ -556,7 +697,7 @@ export const useRouteStore = create((set, get) => ({
       if (_SIM_DEBUG) console.warn('[EXPLAIN] AI explanation request failed:', err.message);
       set({
         agentExplanationLoading: false,
-        agentExplanationError: 'AI explanation could not be loaded. Deterministic analysis is shown above.',
+        agentExplanationError: null,
       });
     }
   },
@@ -589,7 +730,7 @@ export const useRouteStore = create((set, get) => ({
         feedbackType: 'success',
       }));
       // Start courier simulation after dispatch
-      get().startSimulation();
+      get().startSimulation(vehicleId);
     } catch (err) {
       console.error('Failed to start dispatch:', err);
       set({ feedbackMessage: 'Failed to start dispatch: ' + err.message, feedbackType: 'error' });
@@ -697,7 +838,11 @@ export const useRouteStore = create((set, get) => ({
       });
 
       // Rebind simulation to the updated active route
-      if (state.wsConnected && state._wsRef?.readyState === WebSocket.OPEN) {
+      if (
+        state.wsConnected
+        && state._wsRef?.readyState === WebSocket.OPEN
+        && state.simulationVehicleId === vehicleId
+      ) {
         const updatedRoute = get().routes.find((r) => r.vehicle_id === vehicleId);
         if (updatedRoute) {
           const coords = updatedRoute.geometry?.geometry?.coordinates || [];
@@ -714,7 +859,7 @@ export const useRouteStore = create((set, get) => ({
         }
       } else {
         get().stopSimulation();
-        setTimeout(() => get().startSimulation(), 300);
+        setTimeout(() => get().startSimulation(vehicleId), 300);
       }
     } catch (err) {
       console.error('Failed to apply recommendation:', err);
@@ -919,19 +1064,22 @@ export const useRouteStore = create((set, get) => ({
     }
   },
 
-  startSimulation: () => {
+  startSimulation: (vehicleId = null) => {
     const {
       routes,
       _wsRef,
       isConnecting,
       wsConnected,
-      scenarioResult,
-      scenarioResultsByVehicleId,
       completedStopIdsByVehicle,
+      selectedCourierId,
     } = get();
 
     if (routes.length === 0) return;
     if (isConnecting || wsConnected) return;
+
+    const targetVehicleId = vehicleId ?? selectedCourierId ?? routes[0]?.vehicle_id;
+    const routesToSimulate = routes.filter((route) => route.vehicle_id === targetVehicleId);
+    if (routesToSimulate.length === 0) return;
 
     set({ isConnecting: true });
 
@@ -942,19 +1090,16 @@ export const useRouteStore = create((set, get) => ({
     const ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
-      const vehicles = routes.map((route) => {
-        const routeScenario = scenarioResultsByVehicleId[route.vehicle_id]
-          || (scenarioResult?.vehicleId === route.vehicle_id ? scenarioResult : null);
-        const usesScenario = hasScenarioForRoute(routeScenario, route);
+      const vehicles = routesToSimulate.map((route) => {
         const completedIds = completedStopIdsByVehicle[route.vehicle_id] || new Set();
         return {
           courier_id: `courier-${route.vehicle_id}`,
           name: route.courierName,
           vehicle_id: route.vehicle_id,
-          coordinates: getSimulationCoordinates(route, routeScenario),
-          color: usesScenario ? '#22d3ee' : route.color,
-          route_source: usesScenario ? 'scenario' : 'optimized',
-          stops: getSimulationStops(route, routeScenario)
+          coordinates: getSimulationCoordinates(route, null),
+          color: route.color,
+          route_source: 'active',
+          stops: getSimulationStops(route, null)
             .filter((stop) => !completedIds.has(String(stop.stop_id))),
         };
       });
@@ -970,9 +1115,8 @@ export const useRouteStore = create((set, get) => ({
         wsConnected: true,
         isConnecting: false,
         simulationRunning: true,
-        simulationRouteMode: vehicles.some((vehicle) => vehicle.route_source === 'scenario')
-          ? 'scenario'
-          : 'optimized',
+        simulationVehicleId: targetVehicleId,
+        simulationRouteMode: 'optimized',
       });
     };
 
@@ -1098,7 +1242,7 @@ export const useRouteStore = create((set, get) => ({
     };
 
     ws.onclose = () => {
-      set({ wsConnected: false, isConnecting: false, simulationRunning: false, _wsRef: null, liveCouriers: {}, simulationRouteMode: 'optimized' });
+      set({ wsConnected: false, isConnecting: false, simulationRunning: false, simulationVehicleId: null, _wsRef: null, liveCouriers: {}, simulationRouteMode: 'optimized' });
     };
 
     ws.onerror = (err) => {

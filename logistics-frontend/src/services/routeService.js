@@ -6,12 +6,31 @@ export const DEFAULT_DEPOT = {
   depot_longitude: 37.015,
 };
 
+const formatApiErrorDetail = (detail, fallback) => {
+  if (!detail) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail.message === 'string') {
+    const validationErrors = detail.validation?.errors?.length
+      ? ` ${detail.validation.errors.join(' ')}`
+      : '';
+    const unknownStops = detail.unknown_stop_ids?.length
+      ? ` Unknown stops: ${detail.unknown_stop_ids.join(', ')}.`
+      : '';
+    return `${detail.message}.${validationErrors}${unknownStops}`.replace('..', '.');
+  }
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return fallback;
+  }
+};
+
 const requestJson = async (url, options = {}) => {
   const response = await fetch(url, options);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `API error: ${response.status}`);
+    throw new Error(formatApiErrorDetail(errorData.detail, `API error: ${response.status}`));
   }
 
   return response.json();
