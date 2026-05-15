@@ -3,53 +3,46 @@ import MapViewer from '../features/dashboard/components/MapViewer';
 import { useRouteStore } from '../store/useRouteStore';
 import {
   PageHeader, MetricCard, RouteMetricGrid, RoutePicker,
-  RouteOrderComparison, RouteValidationBanner, SegmentEditor,
-  AgentExplanationPanel, DelayImprovementPanel, LoadingState, ErrorState,
+  RouteValidationBanner,
+  AgentExplanationPanel, LoadingState, ErrorState,
+  RecommendationChangeDetails,
 } from '../components/shared';
 
-const NETWORK_DEFAULT_SLIDERS = [
+const CONDITION_SLIDERS = [
   { key: 'traffic_density', label: 'Traffic density', help: 'road congestion', min: 0, max: 100 },
   { key: 'accident_severity', label: 'Accident severity', help: 'incident severity', min: 0, max: 100 },
-  { key: 'road_disruption', label: 'Road disruption', help: 'blocked or slow segments', min: 0, max: 100 },
-];
-
-const GLOBAL_SLIDERS = [
   { key: 'weather_severity', label: 'Weather severity', help: 'rain, wind, fog, snow', min: 0, max: 100 },
+  { key: 'road_disruption', label: 'Road disruption', help: 'blocked or slow roads', min: 0, max: 100 },
   { key: 'package_load', label: 'Package load', help: 'vehicle workload', min: 0, max: 100 },
-  { key: 'dispatch_hour', label: 'Dispatch hour', help: 'time-of-day impact', min: 0, max: 23, format: (v) => `${String(v).padStart(2, '0')}:00` },
+  {
+    key: 'dispatch_hour',
+    label: 'Dispatch hour',
+    help: 'time-of-day impact',
+    min: 0,
+    max: 23,
+    format: (v) => `${String(v).padStart(2, '0')}:00`,
+  },
 ];
 
 const WEATHER_OPTIONS = ['clear', 'cloudy', 'wind', 'fog', 'rain', 'snow'];
 
-function buildSegments(stops, overrides = {}) {
-  return stops.slice(0, -1).map((stop, index) => {
-    const nextStop = stops[index + 1];
-    const segKey = `${stop.stop_id || index}-${nextStop.stop_id || index + 1}`;
-    return {
-      key: segKey,
-      from: stop,
-      to: nextStop,
-      override: {
-        from_stop_id: String(stop.stop_id || index),
-        to_stop_id: String(nextStop.stop_id || index + 1),
-        traffic_density: 0, accident_severity: 0, road_closure: false,
-        weather_severity: 0, speed_reduction: 0, extra_delay_min: 0,
-        risk_level: 'low', priority: 50, road_type: nextStop.road_type || 'urban',
-        ...(overrides[segKey] || {}),
-      },
-    };
-  });
-}
+const round = (value, digits = 1) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? Number(number.toFixed(digits)) : 0;
+};
+
+// Build segment key used by the store
+const makeSegmentKey = (fromStop, toStop) => `${fromStop.stop_id}-${toStop.stop_id}`;
 
 export default function ScenarioPage() {
-  const [selectedSegmentKey, setSelectedSegmentKey] = useState('');
   const {
     loading, error, fetchData, forceFetchData,
     routes, selectedCourierId, setSelectedCourier,
     scenarioControls, scenarioControlsByVehicleId,
-    scenarioResultsByVehicleId, segmentOverridesByVehicleId,
+    scenarioResultsByVehicleId,
     scenarioResult, scenarioLoading, scenarioError,
     setScenarioControl, setSegmentOverride, resetScenario, runScenario,
+    segmentOverridesByVehicleId,
     liveCouriers, pendingSuggestions, handleSuggestionDecision,
     routeLifecycleByVehicleId, loadLifecycleState,
     agentExplanation, agentExplanationLoading, agentExplanationError,
@@ -59,6 +52,10 @@ export default function ScenarioPage() {
     completedStopIdsByVehicle, completedStopVersion,
   } = useRouteStore();
 
+  // Local UI state for scope selector
+  const [conditionScope, setConditionScope] = useState('route'); // 'route' | 'segment'
+  const [selectedSegmentKey, setSelectedSegmentKey] = useState('');
+
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {
     if (selectedCourierId !== null) loadLifecycleState(selectedCourierId);
@@ -66,47 +63,68 @@ export default function ScenarioPage() {
 
   const liveCourierArray = useMemo(() => Object.values(liveCouriers || {}), [liveCouriers]);
   const selectedRoute = routes.find((r) => r.vehicle_id === selectedCourierId) || routes[0] || null;
-  const currentLifecycle = selectedRoute ? routeLifecycleByVehicleId[selectedRoute.vehicle_id]?.status || 'planned' : 'planned';
+  const currentLifecycle = selectedRoute
+    ? routeLifecycleByVehicleId[selectedRoute.vehicle_id]?.status || 'planned'
+    : 'planned';
   const isActive = currentLifecycle === 'dispatched' || currentLifecycle === 'in_progress';
 
-  // Single source of truth: completedStopIdsByVehicle — version triggers re-render
   const completedStopIds = useMemo(
     () => (selectedRoute ? completedStopIdsByVehicle[selectedRoute.vehicle_id] || new Set() : new Set()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedRoute, completedStopIdsByVehicle, completedStopVersion]
+    [selectedRoute, completedStopIdsByVehicle, completedStopVersion],
   );
 
   const allStops = useMemo(() => selectedRoute?.stops || [], [selectedRoute?.stops]);
-  const completedStops = useMemo(() => allStops.filter((s) => completedStopIds.has(String(s.stop_id))), [allStops, completedStopIds]);
-  const remainingStops = useMemo(() => allStops.filter((s) => !completedStopIds.has(String(s.stop_id))), [allStops, completedStopIds]);
+  const completedStops = useMemo(
+    () => allStops.filter((s) => completedStopIds.has(String(s.stop_id))),
+    [allStops, completedStopIds],
+  );
+  const remainingStops = useMemo(
+    () => allStops.filter((s) => !completedStopIds.has(String(s.stop_id))),
+    [allStops, completedStopIds],
+  );
+
   const totalStopCount = completedStopIds.size + remainingStops.length;
   const nextStop = remainingStops[0] || null;
   const allRouteCompleted = isActive && remainingStops.length === 0 && completedStopIds.size > 0;
 
+  // Build segment options from remaining stops (consecutive pairs)
+  const segmentOptions = useMemo(() => {
+    if (remainingStops.length < 2) return [];
+    return remainingStops.slice(0, -1).map((stop, i) => {
+      const next = remainingStops[i + 1];
+      const key = makeSegmentKey(stop, next);
+      const label = `${stop.stop_id} → ${next.stop_id}`;
+      return { key, label, fromStop: stop, toStop: next };
+    });
+  }, [remainingStops]);
+
+  // Derive effective segment key — auto-select first if none chosen yet
+  const effectiveSegmentKey = useMemo(() => {
+    if (conditionScope !== 'segment' || segmentOptions.length === 0) return '';
+    if (selectedSegmentKey && segmentOptions.some((s) => s.key === selectedSegmentKey)) return selectedSegmentKey;
+    return segmentOptions[0].key;
+  }, [conditionScope, segmentOptions, selectedSegmentKey]);
+
   const activeControls = useMemo(
-    () => (selectedRoute ? scenarioControlsByVehicleId[selectedRoute.vehicle_id] || scenarioControls : scenarioControls),
-    [selectedRoute, scenarioControlsByVehicleId, scenarioControls]
+    () => (selectedRoute
+      ? scenarioControlsByVehicleId[selectedRoute.vehicle_id] || scenarioControls
+      : scenarioControls),
+    [selectedRoute, scenarioControlsByVehicleId, scenarioControls],
   );
-  const activeOverrides = useMemo(
-    () => (selectedRoute ? segmentOverridesByVehicleId[selectedRoute.vehicle_id] || {} : {}),
-    [selectedRoute, segmentOverridesByVehicleId]
-  );
+
+  // Current segment override values (for display when segment scope active)
+  const activeSegmentOverride = useMemo(() => {
+    if (!selectedRoute || !effectiveSegmentKey) return null;
+    return segmentOverridesByVehicleId[selectedRoute.vehicle_id]?.[effectiveSegmentKey] || null;
+  }, [selectedRoute, effectiveSegmentKey, segmentOverridesByVehicleId]);
+
   const activeScenarioResult = selectedRoute
     ? scenarioResultsByVehicleId[selectedRoute.vehicle_id]
       || (scenarioResult?.vehicleId === selectedRoute.vehicle_id ? scenarioResult : null)
     : scenarioResult;
 
   const hasRecommendation = Boolean(activeScenarioResult?.scenario_route?.length);
-
-  // Segments based on remaining stops ONLY — hidden when all completed
-  const segments = useMemo(
-    () => (remainingStops.length >= 2 ? buildSegments(remainingStops, activeOverrides) : []),
-    [remainingStops, activeOverrides]
-  );
-  const selectedSegment = useMemo(
-    () => segments.find((segment) => segment.key === selectedSegmentKey) || segments[0] || null,
-    [segments, selectedSegmentKey]
-  );
 
   const routeList = routes.map((r) => {
     const cIds = completedStopIdsByVehicle[r.vehicle_id] || new Set();
@@ -122,52 +140,45 @@ export default function ScenarioPage() {
     };
   });
 
-  const handleControlChange = (key, value) => {
-    setScenarioControl(key, value, selectedRoute?.vehicle_id ?? null);
-  };
+  // Handle condition value change — routes to global OR segment store based on scope
+  const handleConditionChange = useCallback((key, value) => {
+    if (conditionScope === 'route' || !effectiveSegmentKey) {
+      setScenarioControl(key, value, selectedRoute?.vehicle_id ?? null);
+    } else {
+      const seg = segmentOptions.find((s) => s.key === effectiveSegmentKey);
+      if (!seg || !selectedRoute) return;
+      setSegmentOverride(selectedRoute.vehicle_id, effectiveSegmentKey, {
+        from_stop_id: String(seg.fromStop.stop_id),
+        to_stop_id: String(seg.toStop.stop_id),
+        [key]: value,
+      });
+    }
+  }, [conditionScope, effectiveSegmentKey, segmentOptions, selectedRoute, setScenarioControl, setSegmentOverride]);
 
-  const handleSegmentChange = (segmentKey, patch) => {
-    if (!selectedRoute) return;
-    setSegmentOverride(selectedRoute.vehicle_id, segmentKey, patch);
-  };
-
-  const handleSelectedSegmentChange = (patch) => {
-    if (!selectedSegment) return;
-    handleSegmentChange(selectedSegment.key, { ...selectedSegment.override, ...patch });
-  };
-
-  const resetSelectedSegment = () => {
-    if (!selectedSegment) return;
-    handleSegmentChange(selectedSegment.key, {
-      ...selectedSegment.override,
-      traffic_density: 0,
-      accident_severity: 0,
-      road_closure: false,
-      weather_severity: 0,
-      speed_reduction: 0,
-      extra_delay_min: 0,
-      risk_level: 'low',
-      priority: 50,
-    });
-  };
+  // Get displayed value for a condition key (global or segment-specific)
+  const getDisplayValue = useCallback((key) => {
+    if (conditionScope === 'segment' && activeSegmentOverride) {
+      const segVal = activeSegmentOverride[key];
+      if (segVal !== undefined && segVal !== null) return Number(segVal);
+    }
+    return Number(activeControls?.[key] ?? 0);
+  }, [conditionScope, activeSegmentOverride, activeControls]);
 
   const handleRecalculate = useCallback(async () => {
     if (!selectedRoute) return;
     await runScenario(selectedRoute.vehicle_id);
 
-    // Request AI explanation asynchronously — do NOT block recommendation display
     const sr = useRouteStore.getState().scenarioResultsByVehicleId[selectedRoute.vehicle_id]
       || useRouteStore.getState().scenarioResult;
 
     if (sr) {
       const beforeDelay = sr.optimization_delta?.current_operational_delay_min
-        ?? sr.schedule_comparison?.current_order?.total_operational_delay_min
         ?? sr.baseline_metrics?.expected_delay_min
-        ?? remainingStops.reduce((sum, stop) => sum + Number(stop.expected_delay_min || 0), 0);
+        ?? remainingStops.reduce((sum, s) => sum + Number(s.expected_delay_min || 0), 0);
       const afterDelay = sr.optimization_delta?.optimized_operational_delay_min
-        ?? sr.schedule_comparison?.optimized_order?.total_operational_delay_min
         ?? sr.scenario_metrics?.expected_delay_min
-        ?? (sr.scenario_route || []).reduce((sum, stop) => sum + Number(stop.expected_delay_min || 0), 0);
+        ?? (sr.scenario_route || []).reduce((sum, s) => sum + Number(s.expected_delay_min || 0), 0);
+
       requestAgentExplanation({
         route_id: selectedRoute.vehicle_id,
         route_state: currentLifecycle,
@@ -177,7 +188,7 @@ export default function ScenarioPage() {
         stop_order_before: remainingStops.map((s) => s.stop_name || s.stop_id || ''),
         stop_order_after: (sr.scenario_route || []).map((s) => s.stop_name || s.stop_id || ''),
         user_question: 'Why is this recommendation useful, or why should we keep the current route?',
-      }).catch(() => { /* AI explanation is supplementary */ });
+      }).catch(() => {});
     }
   }, [selectedRoute, currentLifecycle, activeControls, remainingStops, runScenario, requestAgentExplanation]);
 
@@ -197,20 +208,45 @@ export default function ScenarioPage() {
   if (!selectedRoute) return <ErrorState message="No route available." onRetry={forceFetchData} />;
 
   const recommendedStops = activeScenarioResult?.scenario_route || [];
-
-  // Strict validation: recommendation must contain exactly the remaining stops
   const recommendationAllowed = !hasRecommendation || activeScenarioResult?.recommendation_allowed !== false;
   const recommendationValid = !hasRecommendation || (() => {
     const rIds = new Set(remainingStops.map((s) => String(s.stop_id)).filter(Boolean));
     const sIds = new Set(recommendedStops.map((s) => String(s.stop_id || s.stop_name)).filter(Boolean));
-    // Check both directions: no missing AND no unexpected stops
-    const allPresent = [...rIds].every((id) => sIds.has(id));
-    const noExtra = [...sIds].every((id) => rIds.has(id));
-    return recommendationAllowed && allPresent && noExtra && rIds.size === sIds.size;
+    return recommendationAllowed && [...rIds].every((id) => sIds.has(id)) && [...sIds].every((id) => rIds.has(id)) && rIds.size === sIds.size;
   })();
-  const validationMissing = hasRecommendation ? remainingStops.filter((s) => !new Set(recommendedStops.map((r) => String(r.stop_id || r.stop_name))).has(String(s.stop_id))) : [];
-  const validationExtra = hasRecommendation ? recommendedStops.filter((s) => !new Set(remainingStops.map((r) => String(r.stop_id))).has(String(s.stop_id || s.stop_name))) : [];
   const applyBlocked = !recommendationValid || !recommendationAllowed;
+
+  // ── Metric mapping: all three values from the SAME comparison basis ──────────
+  // optimization_delta is keyed on "same_updated_conditions" — use it exclusively.
+  const currentDelayRisk = round(
+    activeScenarioResult?.optimization_delta?.current_operational_delay_min
+    ?? activeScenarioResult?.schedule_comparison?.current_order?.total_operational_delay_min
+    ?? activeScenarioResult?.baseline_metrics?.expected_delay_min
+    ?? selectedRoute.metrics?.expectedDelayMin
+    ?? 0,
+  );
+  const recommendedDelayRisk = round(
+    activeScenarioResult?.optimization_delta?.optimized_operational_delay_min
+    ?? activeScenarioResult?.schedule_comparison?.optimized_order?.total_operational_delay_min
+    ?? activeScenarioResult?.scenario_metrics?.expected_delay_min
+    ?? 0,
+  );
+  const estimatedSaving = round(
+    activeScenarioResult?.optimization_delta?.route_cost_saved_min
+    ?? activeScenarioResult?.optimization_delta?.operational_delay_saved_min
+    ?? (currentDelayRisk - recommendedDelayRisk),
+  );
+
+  const recommendationStatus = hasRecommendation
+    ? (applyBlocked ? 'Blocked' : recommendationAllowed ? 'Ready' : 'Keep current')
+    : 'None';
+  const recommendationTone = hasRecommendation
+    ? (applyBlocked || !recommendationAllowed ? 'warning' : 'success')
+    : 'neutral';
+
+  // Active weather/conservative come always from global controls
+  const weatherValue = activeControls?.weather_condition ?? 'clear';
+  const conservativeValue = Boolean(activeControls?.conservative_mode);
 
   return (
     <div className="dashboard-container">
@@ -223,10 +259,12 @@ export default function ScenarioPage() {
             : 'Dispatch a route first to begin live monitoring.'}
         >
           <div className="header-metrics">
-            <MetricCard label="Route" value={selectedRoute.courierName} />
+            <MetricCard label="Courier" value={selectedRoute.courierName} />
+            <MetricCard label="Tracking" value={simulationRunning ? 'Live' : 'Stopped'} tone={simulationRunning ? 'success' : 'neutral'} />
             <MetricCard label="Progress" value={`${completedStopIds.size}/${totalStopCount}`} tone={completedStopIds.size > 0 ? 'success' : 'neutral'} />
             <MetricCard label="Remaining" value={remainingStops.length} />
-            <MetricCard label="Tracking" value={simulationRunning ? 'Live' : 'Stopped'} tone={simulationRunning ? 'success' : 'neutral'} />
+            <MetricCard label="Current delay risk" value={`${round(currentDelayRisk)} min`} tone="warning" />
+            <MetricCard label="Recommendation" value={recommendationStatus} tone={recommendationTone} />
           </div>
         </PageHeader>
 
@@ -242,23 +280,33 @@ export default function ScenarioPage() {
         {isActive && !simulationRunning && (
           <div className="info-banner info-banner--amber">
             Courier dispatched but live tracking not running.
-            <button className="control-btn control-btn--primary" style={{ marginLeft: 'auto', padding: '0.4rem 0.8rem' }} onClick={() => startSimulation(selectedRoute.vehicle_id)}>Start Live Tracking</button>
-          </div>
-        )}
-        {simulationRunning && (
-          <div className="info-banner info-banner--green">
-            <span className="live-dot" style={{ marginRight: '0.5rem' }} /> Courier is live. Stops marked as visited automatically.
+            <button
+              className="control-btn control-btn--primary"
+              style={{ marginLeft: 'auto', padding: '0.4rem 0.8rem' }}
+              onClick={() => startSimulation(selectedRoute.vehicle_id)}
+            >
+              Start Live Tracking
+            </button>
           </div>
         )}
 
-        {/* Courier progress panel */}
+        {simulationRunning && (
+          <div className="info-banner info-banner--green">
+            <span className="live-dot" style={{ marginRight: '0.5rem' }} />
+            Courier is live. Stops marked as visited automatically.
+          </div>
+        )}
+
         {isActive && (
-          <section className="page-card">
+          <section className="live-progress-strip">
             <div className="courier-progress-row">
               <div className="progress-col">
                 <span className="panel-kicker">Courier progress</span>
                 <div className="progress-bar-container" style={{ marginTop: '0.4rem' }}>
-                  <div className="progress-bar-fill" style={{ width: totalStopCount > 0 ? `${(completedStopIds.size / totalStopCount) * 100}%` : '0%' }} />
+                  <div
+                    className="progress-bar-fill"
+                    style={{ width: totalStopCount > 0 ? `${(completedStopIds.size / totalStopCount) * 100}%` : '0%' }}
+                  />
                 </div>
                 <span className="progress-text">{completedStopIds.size} / {totalStopCount} stops visited</span>
               </div>
@@ -299,176 +347,146 @@ export default function ScenarioPage() {
         )}
 
         <div className="page-grid page-grid--scenario">
-          {/* Left: Condition Controls */}
+          {/* ── Left: Route & Conditions ── */}
           <section className="page-card page-card--scroll">
             <span className="panel-kicker">Condition setup</span>
-            <h2>Route & conditions</h2>
+            <h2>Route &amp; conditions</h2>
+
             <RoutePicker routes={routeList} selectedId={selectedCourierId} onChange={setSelectedCourier} />
 
-            <div style={{ marginTop: '1rem' }}>
+            {/* ── A) Scope Selector ── */}
+            <div className="scope-selector">
+              <span className="panel-kicker" style={{ display: 'block', marginBottom: '0.5rem' }}>Apply conditions to</span>
+              <div className="scope-options">
+                <label className={`scope-option ${conditionScope === 'route' ? 'scope-option--active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="conditionScope"
+                    value="route"
+                    checked={conditionScope === 'route'}
+                    onChange={() => setConditionScope('route')}
+                  />
+                  <span>Entire remaining route</span>
+                </label>
+                <label className={`scope-option ${conditionScope === 'segment' ? 'scope-option--active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="conditionScope"
+                    value="segment"
+                    checked={conditionScope === 'segment'}
+                    onChange={() => setConditionScope('segment')}
+                  />
+                  <span>Selected segment</span>
+                </label>
+              </div>
+
+              {/* ── B) Segment Dropdown ── */}
+              {conditionScope === 'segment' && (
+                <div style={{ marginTop: '0.65rem' }}>
+                  {segmentOptions.length === 0 ? (
+                    <div className="info-banner info-banner--amber" style={{ fontSize: '0.8rem' }}>
+                      No segments available (need ≥2 remaining stops).
+                    </div>
+                  ) : (
+                    <label className="field-card">
+                      <span>Segment</span>
+                      <select
+                        value={effectiveSegmentKey}
+                        onChange={(e) => setSelectedSegmentKey(e.target.value)}
+                      >
+                        {segmentOptions.map((seg) => (
+                          <option key={seg.key} value={seg.key}>{seg.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {activeSegmentOverride && (
+                    <div className="info-banner info-banner--blue" style={{ marginTop: '0.45rem', fontSize: '0.78rem' }}>
+                      Segment override active — values below show this segment&apos;s settings.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── C) Condition Controls ── */}
+            <div className="condition-panel-body">
               <div className="section-title-row">
-                <h2>Global conditions</h2>
+                <div>
+                  <span className="panel-kicker">
+                    {conditionScope === 'segment' && effectiveSegmentKey
+                      ? `Conditions for: ${segmentOptions.find((s) => s.key === effectiveSegmentKey)?.label || 'segment'}`
+                      : 'Global conditions'}
+                  </span>
+                  <h2>Route conditions</h2>
+                </div>
                 <button className="control-btn control-btn--neutral" onClick={handleKeepCurrentRoute}>Reset</button>
               </div>
 
-                <div className="info-banner info-banner--blue" style={{ marginTop: '0.5rem', marginBottom: '0.8rem', fontSize: '0.78rem' }}>
-                  <strong>How conditions work:</strong> Weather, load, and time affect the whole remaining route. Traffic, accidents, closure, and speed changes should be applied to a selected road segment below.
+              {conditionScope === 'route' && (
+                <div className="info-banner info-banner--blue condition-note">
+                  <strong>Entire route:</strong> conditions applied to all remaining stops.
                 </div>
+              )}
+              {conditionScope === 'segment' && effectiveSegmentKey && (
+                <div className="info-banner info-banner--blue condition-note">
+                  <strong>Segment only:</strong> these conditions override this segment in the recalculation.
+                </div>
+              )}
 
-              <div className="condition-controls">
+              {/* Weather type — always global */}
+              <div className="condition-controls condition-controls--compact" style={{ marginTop: '0.65rem' }}>
                 <label className="field-card">
-                  <span>Weather type</span>
-                  <select value={activeControls?.weather_condition || 'clear'} onChange={(e) => handleControlChange('weather_condition', e.target.value)}>
+                  <span>Weather type <small style={{ color: '#94a3b8' }}>(global)</small></span>
+                  <select
+                    value={weatherValue}
+                    onChange={(e) => setScenarioControl('weather_condition', e.target.value, selectedRoute?.vehicle_id ?? null)}
+                  >
                     {WEATHER_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
                   </select>
                 </label>
 
-                {GLOBAL_SLIDERS.map((item) => {
-                  const value = Number(activeControls?.[item.key] ?? 0);
+                {/* All numeric sliders — routed to global or segment based on scope */}
+                {CONDITION_SLIDERS.map((item) => {
+                  const value = getDisplayValue(item.key);
                   return (
                     <label className="slider-card" key={item.key}>
-                      <span><strong>{item.label}</strong><small>{item.help}</small></span>
+                      <span>
+                        <strong>{item.label}</strong>
+                        <small>{item.help}</small>
+                      </span>
                       <b>{item.format ? item.format(value) : `${value}/100`}</b>
-                      <input type="range" min={item.min} max={item.max} value={value}
-                        onChange={(e) => handleControlChange(item.key, Number(e.target.value))} />
+                      <input
+                        type="range"
+                        min={item.min}
+                        max={item.max}
+                        value={value}
+                        onChange={(e) => handleConditionChange(item.key, Number(e.target.value))}
+                      />
                     </label>
                   );
                 })}
 
-                <div className="segment-control-panel">
-                  <div className="section-title-row">
-                    <div>
-                      <span className="panel-kicker">Road segment conditions</span>
-                      <h2>Edit one road section</h2>
-                    </div>
-                    <button
-                      type="button"
-                      className="control-btn control-btn--neutral"
-                      onClick={resetSelectedSegment}
-                      disabled={!selectedSegment}
-                    >
-                      Clear segment
-                    </button>
-                  </div>
-
-                  {selectedSegment ? (
-                    <>
-                      <label className="field-card field-card--segment">
-                        <span>Select segment between stops</span>
-                        <select
-                          value={selectedSegment.key}
-                          onChange={(event) => setSelectedSegmentKey(event.target.value)}
-                        >
-                          {segments.map((segment, index) => (
-                            <option key={segment.key} value={segment.key}>
-                              {index + 1}. {segment.from?.stop_name || segment.from?.stop_id} {'->'} {segment.to?.stop_name || segment.to?.stop_id}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <div className="selected-segment-summary">
-                        <strong>{selectedSegment.from?.stop_name || selectedSegment.from?.stop_id}</strong>
-                        <span>to</span>
-                        <strong>{selectedSegment.to?.stop_name || selectedSegment.to?.stop_id}</strong>
-                      </div>
-
-                      {NETWORK_DEFAULT_SLIDERS.map((item) => {
-                        const value = Number(selectedSegment.override?.[item.key] ?? 0);
-                        return (
-                          <label className="slider-card slider-card--segment" key={item.key}>
-                            <span><strong>{item.label}</strong><small>{item.help} for selected segment only</small></span>
-                            <b>{`${value}/100`}</b>
-                            <input
-                              type="range"
-                              min={item.min}
-                              max={item.max}
-                              value={value}
-                              onChange={(event) => handleSelectedSegmentChange({ [item.key]: Number(event.target.value) })}
-                            />
-                          </label>
-                        );
-                      })}
-
-                      <label className="slider-card slider-card--segment">
-                        <span><strong>Speed reduction</strong><small>slowdown on this selected road section only</small></span>
-                        <b>{Number(selectedSegment.override?.speed_reduction ?? 0)}/100</b>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={Number(selectedSegment.override?.speed_reduction ?? 0)}
-                          onChange={(event) => handleSelectedSegmentChange({ speed_reduction: Number(event.target.value) })}
-                        />
-                      </label>
-
-                      <label className="slider-card slider-card--segment">
-                        <span><strong>Extra delay</strong><small>manual delay on this road section</small></span>
-                        <b>{Number(selectedSegment.override?.extra_delay_min ?? 0)} min</b>
-                        <input
-                          type="range"
-                          min="0"
-                          max="120"
-                          value={Number(selectedSegment.override?.extra_delay_min ?? 0)}
-                          onChange={(event) => handleSelectedSegmentChange({ extra_delay_min: Number(event.target.value) })}
-                        />
-                      </label>
-
-                      <label className="toggle-card toggle-card--segment">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(selectedSegment.override?.road_closure)}
-                          onChange={(event) => handleSelectedSegmentChange({ road_closure: event.target.checked })}
-                        />
-                        <span><strong>Close selected segment</strong><small>forces optimizer to avoid this road section if an alternative exists.</small></span>
-                      </label>
-
-                      <label className="field-card field-card--segment">
-                        <span>Risk level for selected segment</span>
-                        <select
-                          value={selectedSegment.override?.risk_level || 'low'}
-                          onChange={(event) => handleSelectedSegmentChange({ risk_level: event.target.value })}
-                        >
-                          {['low', 'medium', 'high', 'critical'].map((level) => (
-                            <option key={level} value={level}>{level}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </>
-                  ) : (
-                    <div className="info-banner info-banner--amber" style={{ fontSize: '0.78rem' }}>
-                      There are not enough remaining stops to create an editable road segment.
-                    </div>
-                  )}
-                </div>
-
-                <details className="advanced-network-defaults">
-                  <summary>Advanced fallback network defaults</summary>
-                  <div className="info-banner info-banner--amber" style={{ fontSize: '0.76rem', margin: '0.6rem 0' }}>
-                    These route-wide values are only fallback inputs. Use the segment selector above for real road-specific traffic, accident, and disruption changes.
-                  </div>
-                  {NETWORK_DEFAULT_SLIDERS.map((item) => {
-                    const value = Number(activeControls?.[item.key] ?? 0);
-                    return (
-                      <label className="slider-card" key={item.key}>
-                        <span><strong>{item.label}</strong><small>{item.help} fallback</small></span>
-                        <b>{`${value}/100`}</b>
-                        <input type="range" min={item.min} max={item.max} value={value}
-                          onChange={(e) => handleControlChange(item.key, Number(e.target.value))} />
-                      </label>
-                    );
-                  })}
-                </details>
-
+                {/* Conservative mode — always global */}
                 <label className="toggle-card">
-                  <input type="checkbox" checked={Boolean(activeControls?.conservative_mode)} onChange={(e) => handleControlChange('conservative_mode', e.target.checked)} />
-                  <span><strong>Conservative mode</strong><small>Use worst-case (P90) delay estimates.</small></span>
+                  <input
+                    type="checkbox"
+                    checked={conservativeValue}
+                    onChange={(e) => setScenarioControl('conservative_mode', e.target.checked, selectedRoute?.vehicle_id ?? null)}
+                  />
+                  <span>
+                    <strong>Conservative mode</strong>
+                    <small>Use worst-case (P90) delay estimates. (global)</small>
+                  </span>
                 </label>
               </div>
             </div>
 
-            <button className="control-btn control-btn--primary control-btn--full"
-              onClick={handleRecalculate} disabled={scenarioLoading || allRouteCompleted}>
+            <button
+              className="control-btn control-btn--primary control-btn--full"
+              onClick={handleRecalculate}
+              disabled={scenarioLoading || allRouteCompleted}
+            >
               {allRouteCompleted
                 ? 'All stops completed'
                 : scenarioLoading
@@ -477,14 +495,22 @@ export default function ScenarioPage() {
             </button>
           </section>
 
-          {/* Center: Map */}
+          {/* ── Right: Map ── */}
           <section className="page-card page-card--map">
             <div className="section-title-row">
               <div>
-                <span className="panel-kicker">{hasRecommendation ? 'Active vs Recommended Route' : 'Active Dispatch Route'}</span>
-                <h2>{hasRecommendation ? `Recommendation: ${recommendedStops.length} remaining stops` : selectedRoute.courierName}</h2>
+                <span className="panel-kicker">
+                  {hasRecommendation ? 'Active vs Recommended Route' : 'Active Dispatch Route'}
+                </span>
+                <h2>
+                  {hasRecommendation
+                    ? `Recommendation: ${recommendedStops.length} remaining stops`
+                    : selectedRoute.courierName}
+                </h2>
               </div>
-              {simulationRunning && <span className="live-pill live-pill--on"><span className="live-dot" /> Live</span>}
+              {simulationRunning && (
+                <span className="live-pill live-pill--on"><span className="live-dot" /> Live</span>
+              )}
             </div>
 
             <RouteMetricGrid route={selectedRoute} scenarioResult={activeScenarioResult} />
@@ -509,115 +535,93 @@ export default function ScenarioPage() {
               />
             </div>
           </section>
-
-          {/* Right: Segment Editor for remaining stops only */}
-          <aside className="page-card page-card--scroll">
-            {allRouteCompleted ? (
-              <div className="info-banner info-banner--green" style={{ fontSize: '0.82rem' }}>
-                All stops completed. No remaining road sections to configure.
-              </div>
-            ) : (
-              <>
-                {completedStops.length > 0 && (
-                  <div className="info-banner info-banner--blue" style={{ fontSize: '0.76rem', marginBottom: '0.5rem' }}>
-                    Segments are based on the <strong>{remainingStops.length} remaining stops</strong> ({segments.length} editable segments). Completed road sections are not reoptimized.
-                  </div>
-                )}
-                {segments.length > 0 ? (
-                  <SegmentEditor segments={segments} onChange={handleSegmentChange} />
-                ) : (
-                  <div style={{ color: '#6b7280', fontSize: '0.82rem', padding: '1rem 0' }}>
-                    Not enough remaining stops to create segments.
-                  </div>
-                )}
-              </>
-            )}
-          </aside>
         </div>
 
-        {/* Results section */}
+        {/* ── Recommendation Panel ── */}
         {hasRecommendation && (
-          <div className="responsive-results-grid">
-            <section className="page-card">
-              <span className="panel-kicker">Delay proof before apply</span>
-              <h2>Delay improvement</h2>
-              <DelayImprovementPanel baseline={remainingStops} scenario={activeScenarioResult} />
-            </section>
-            <section className="page-card">
-              <span className="panel-kicker">Stop order comparison</span>
-              <h2>Remaining: before vs after ({remainingStops.length} → {recommendedStops.length})</h2>
-              <RouteOrderComparison baseline={remainingStops} scenario={activeScenarioResult} />
-            </section>
-            <section className="page-card">
-              <span className="panel-kicker">Recommendation explanation</span>
-              <h2>What changed and why</h2>
-
-              {activeScenarioResult?.delta && (
-                <div className="metric-grid" style={{ marginBottom: '1rem' }}>
-                  <MetricCard label="Travel delta" value={`${activeScenarioResult.delta.travel_time_min != null ? (activeScenarioResult.delta.travel_time_min > 0 ? '+' : '') + activeScenarioResult.delta.travel_time_min : '--'} min`} />
-                  <MetricCard
-                    label="Total cost saving"
-                    value={`${activeScenarioResult.optimization_delta?.route_cost_saved_min != null ? (activeScenarioResult.optimization_delta.route_cost_saved_min > 0 ? '-' : activeScenarioResult.optimization_delta.route_cost_saved_min < 0 ? '+' : '') + Math.abs(activeScenarioResult.optimization_delta.route_cost_saved_min) : '--'} min`}
-                    subvalue="road time + ML delay + penalties"
-                    tone={activeScenarioResult.recommendation_allowed === false ? 'warning' : 'success'}
-                  />
-                  <MetricCard label="Order changed" value={activeScenarioResult.order_changed ? 'Yes' : 'No'} tone={activeScenarioResult.order_changed ? 'warning' : 'success'} />
-                  <MetricCard label="Change type" value={String(activeScenarioResult.change_type || 'not run').replaceAll('_', ' ')} tone={activeScenarioResult.no_better_route ? 'warning' : 'blue'} />
-                </div>
-              )}
-
-              {activeScenarioResult?.candidate_routes?.length > 0 && (
-                <div className="info-banner info-banner--blue" style={{ marginBottom: '0.75rem', fontSize: '0.82rem' }}>
-                  <strong>Backend candidate audit:</strong> {activeScenarioResult.candidates_evaluated} candidates,
-                  {' '}{activeScenarioResult.stop_orders_evaluated} stop orders, and
-                  {' '}{activeScenarioResult.path_alternatives_evaluated} road-path alternatives were scored.
-                  Selected: <strong>{activeScenarioResult.selected_candidate_id}</strong>.
-                  {activeScenarioResult.ai_decision?.decision
-                    ? ` Agent decision: ${activeScenarioResult.ai_decision.decision.replaceAll('_', ' ')}.`
-                    : ''}
-                </div>
-              )}
-
-              {/* Deterministic explanation always visible immediately */}
-              {activeScenarioResult?.deterministic_summary && !agentExplanation && (
-                <div className="info-banner info-banner--blue" style={{ marginBottom: '0.5rem', fontSize: '0.82rem' }}>
-                  <strong>Deterministic analysis:</strong> {activeScenarioResult.deterministic_summary || 'Route reoptimized under updated conditions.'}
-                </div>
-              )}
-
-              <AgentExplanationPanel
-                explanation={agentExplanation}
-                loading={agentExplanationLoading}
-                error={agentExplanationError}
-              />
-
-              {agentExplanationLoading && (
-                <div style={{ fontSize: '0.78rem', color: '#6b7280', marginTop: '0.3rem' }}>
-                  <span className="live-dot" style={{ marginRight: '0.4rem', display: 'inline-block', width: 8, height: 8, borderRadius: '50%', backgroundColor: '#3b82f6', animation: 'pulse 1.5s infinite' }} />
-                  Optional AI assistant note is being prepared. The deterministic backend explanation is already available.
-                </div>
-              )}
-
-              <div className="responsive-btn-row" style={{ marginTop: '1rem' }}>
-                <button
-                  className="control-btn dispatch-btn"
-                  onClick={handleApplyRecommendation}
-                  disabled={applyBlocked}
-                  title={!recommendationValid ? `Route validation failed. ${validationMissing.length > 0 ? `Missing: ${validationMissing.map(s => s.stop_id).join(', ')}. ` : ''}${validationExtra.length > 0 ? `Unexpected: ${validationExtra.map(s => s.stop_id || s.stop_name).join(', ')}.` : ''}` : ''}
-                  style={{ flex: 1, opacity: applyBlocked ? 0.5 : 1 }}
-                >
-                  {!recommendationAllowed
-                      ? 'No Better Route - Keep Current'
-                      : recommendationValid
-                      ? 'Apply Recommendation'
-                      : 'Apply Blocked - Validation Failed'}
-                </button>
-                <button className="control-btn control-btn--neutral" onClick={handleKeepCurrentRoute} style={{ flex: 1 }}>
-                  Keep Current Route
-                </button>
+          <section className="page-card" style={{ marginTop: '0.8rem' }}>
+            <div className="section-title-row" style={{ marginBottom: '0.75rem' }}>
+              <div>
+                <span className="panel-kicker">Recommendation Available</span>
+                <h2>Optimization Results &amp; Explanation</h2>
               </div>
-            </section>
-          </div>
+            </div>
+
+            {/* 1. Metric cards — all from the same comparison basis (optimization_delta) */}
+            <div className="metric-grid" style={{ marginBottom: '1rem' }}>
+              <MetricCard
+                label="Current route delay (scenario)"
+                value={`${currentDelayRisk} min`}
+                tone="warning"
+                subvalue="active route under updated conditions"
+              />
+              <MetricCard
+                label="Recommended route delay"
+                value={`${recommendedDelayRisk} min`}
+                tone={recommendedDelayRisk < currentDelayRisk ? 'success' : 'neutral'}
+                subvalue="recommended route under same conditions"
+              />
+              <MetricCard
+                label="Route cost saving"
+                value={estimatedSaving > 0 ? `−${estimatedSaving} min` : estimatedSaving === 0 ? '0 min' : `${estimatedSaving} min`}
+                tone={estimatedSaving > 0 ? 'success' : 'warning'}
+                subvalue="current cost − recommended cost"
+              />
+              <MetricCard
+                label="Change type"
+                value={String(activeScenarioResult?.change_type || 'None').replaceAll('_', ' ')}
+                tone={activeScenarioResult?.no_better_route ? 'warning' : 'blue'}
+              />
+            </div>
+
+            {/* 2. Change details: stop order diff + road path changes + decision proof */}
+            <RecommendationChangeDetails scenarioResult={activeScenarioResult} />
+
+            {/* 3. Explanation */}
+            <div className="explanation-container" style={{ background: '#f8fbff', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0', marginTop: '1rem', marginBottom: '1rem' }}>
+              {activeScenarioResult?.explanation && !agentExplanation && (
+                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1e40af', marginBottom: '0.5rem' }}>
+                  {activeScenarioResult.explanation}
+                </div>
+              )}
+              {activeScenarioResult?.recommendation_reason && (
+                <div style={{ fontSize: '0.82rem', color: '#374151', marginBottom: '0.5rem' }}>
+                  <strong>Backend reasoning:</strong> {activeScenarioResult.recommendation_reason}
+                </div>
+              )}
+              <AgentExplanationPanel explanation={agentExplanation} loading={agentExplanationLoading} error={agentExplanationError} />
+              {agentExplanationLoading && (
+                <div style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '0.5rem' }}>
+                  <span className="live-dot" style={{ display: 'inline-block', marginRight: '0.4rem', width: 8, height: 8, borderRadius: '50%', backgroundColor: '#3b82f6' }} />
+                  Generating AI explanation...
+                </div>
+              )}
+            </div>
+
+
+            <div className="responsive-btn-row">
+              <button
+                className="control-btn dispatch-btn"
+                onClick={handleApplyRecommendation}
+                disabled={applyBlocked}
+                title={!recommendationValid ? 'Validation failed' : ''}
+                style={{ flex: 1, minHeight: '44px', opacity: applyBlocked ? 0.5 : 1 }}
+              >
+                {!recommendationAllowed
+                  ? 'No Better Route - Keep Current'
+                  : recommendationValid
+                    ? 'Apply Recommendation'
+                    : 'Apply Blocked - Validation Failed'}
+              </button>
+              <button
+                className="control-btn control-btn--neutral"
+                onClick={handleKeepCurrentRoute}
+                style={{ flex: 1, minHeight: '44px' }}
+              >
+                Keep Current Route
+              </button>
+            </div>
+          </section>
         )}
       </div>
     </div>

@@ -1,8 +1,8 @@
 Question,Category,Retriever_Score,Context_Precision,Hallucination_Pass,Answer_Score,Fallback_Used,Generation_Status,AI_Explanation_Length,Ollama_URL,Generation_Error
-Why did the route change after traffic increased?,routing_logic,1.0,1.0,1.0,1.0,0,success,452,http://localhost:11434/api/generate,
-Why was stop 4 moved earlier?,time_windows,1.0,1.0,1.0,1.0,0,success,333,http://localhost:11434/api/generate,
-What does high missed-window risk mean?,risk_interpretation,1.0,1.0,1.0,1.0,0,success,384,http://localhost:11434/api/generate,
-Why is the original route dashed?,ui_interpretation,1.0,0.6667,1.0,1.0,0,success,388,http://localhost:11434/api/generate,
-Is this using real road geometry or CSV straight-line data?,system_data,1.0,1.0,1.0,1.0,0,success,359,http://localhost:11434/api/generate,
-What happens if road closure is applied?,scenario,1.0,0.6667,1.0,1.0,0,success,372,http://localhost:11434/api/generate,
-Why should the dispatcher trust the recommendation?,trust,1.0,0.5,1.0,1.0,0,success,502,http://localhost:11434/api/generate,
+Why did the route change after traffic increased?,routing_logic,1.0,1.0,1.0,1.0,0,success,186,http://localhost:11434/api/generate,
+Why was stop 4 moved earlier?,time_windows,1.0,1.0,1.0,1.0,0,success,193,http://localhost:11434/api/generate,
+What does high missed-window risk mean?,risk_interpretation,1.0,0.6667,,0.0,1,failed,0,http://localhost:11434/api/generate,Ollama request timed out after 60s at http://localhost:11434/api/generate
+Why is the original route dashed?,ui_interpretation,1.0,0.6667,1.0,1.0,0,success,258,http://localhost:11434/api/generate,
+Is this using real road geometry or CSV straight-line data?,system_data,1.0,1.0,1.0,1.0,0,success,297,http://localhost:11434/api/generate,
+What happens if road closure is applied?,scenario,1.0,0.6667,,0.0,1,failed,0,http://localhost:11434/api/generate,Ollama request timed out after 60s at http://localhost:11434/api/generate
+Why should the dispatcher trust the recommendation?,trust,1.0,0.5,1.0,1.0,0,success,225,http://localhost:11434/api/generate,

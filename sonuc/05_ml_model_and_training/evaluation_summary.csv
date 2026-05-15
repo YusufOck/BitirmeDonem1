@@ -1,0 +1,14 @@
+metric,value
+MAE delay minutes,5.3579
+RMSE delay minutes,11.8455
+Median absolute error minutes,1.8
+R2 delay,0.9213
+Within 5 minutes,0.7552
+High-delay MAE >=60,12.0015
+Extreme-delay MAE >=120,18.619
+P90 coverage,0.8897
+High-delay rows >=60,65
+Extreme-delay rows >=120,21
+Evaluation rows,290
+Evaluation routes,40
+Evaluation method,GroupKFold held-out routes; predicted route-by-route

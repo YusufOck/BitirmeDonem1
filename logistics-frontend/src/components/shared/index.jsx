@@ -594,3 +594,5 @@ export function ErrorState({ message, onRetry }) {
     </div>
   );
 }
+
+export { default as RecommendationChangeDetails } from './RecommendationChangeDetails.jsx';

@@ -1,0 +1,53 @@
+graph TD
+    %% Users
+    Dispatcher[Human Dispatcher]
+
+    %% Frontend Service
+    subgraph Frontend [SBTU Logistics Frontend]
+        UI[React UI + Vite]
+        Zustand[State Management]
+        Map[Mapbox GL Map]
+    end
+
+    %% Backend Services
+    subgraph Backend [FastAPI Backend]
+        API[REST & WebSocket API]
+        VRP[OR-Tools VRP Solver]
+        AI[AI Agent & RAG Evaluator]
+    end
+
+    %% ML Service
+    subgraph MachineLearning [ML Subsystem]
+        Model[CatBoost Delay Predictor]
+    end
+
+    %% External & Internal Data Stores
+    subgraph Data [Data & State]
+        Postgres[(PostgreSQL DB)]
+        Redis[(Redis Pub/Sub & Cache)]
+    end
+
+    %% LLM Component
+    subgraph LLM [Local LLM Engine]
+        Ollama[Ollama llama3.2]
+    end
+
+    %% External APIs
+    MapboxAPI[Mapbox Matrix/Directions API]
+
+    %% Connections
+    Dispatcher -->|Interacts| UI
+    UI <-->|State Sync| Zustand
+    UI -->|Renders map| Map
+    Zustand <-->|REST/WS| API
+    
+    API <-->|Reads/Writes| Postgres
+    API <-->|Caches/Streams| Redis
+    API -->|Routing Setup| VRP
+    API -->|Explanation Req| AI
+    
+    VRP <-->|Requests Travel Time| MapboxAPI
+    VRP -->|Asks for ML Risk| Model
+    
+    AI <-->|Retrieves Context| Postgres
+    AI <-->|Prompts & Generates| Ollama

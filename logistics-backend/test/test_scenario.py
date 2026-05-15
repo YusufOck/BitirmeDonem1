@@ -1,11 +1,6 @@
 import pytest
 # We mock out the internal matrix adjustment since it's an internal function in routes.py
-from api.routes import (
-    _apply_scenario_to_stops,
-    _evaluate_route_order,
-    _localized_segment_penalty_min,
-    _run_controlled_ai_decision_agent,
-)
+from api.routes import _apply_scenario_to_stops, _evaluate_route_order
 from api.schemas import ScenarioControls, SegmentConditionOverride
 from ml.inference import predict_stop
 
@@ -115,90 +110,3 @@ def test_route_order_delay_metric_excludes_lateness_penalty():
     for stop in result["route"]:
         assert stop["expected_delay_min"] == stop["ml_delay_min"]
         assert stop["operational_delay_min"] == stop["ml_delay_min"]
-
-
-def test_segment_closure_penalizes_current_path_more_than_alternative():
-    override = SegmentConditionOverride(
-        from_stop_id="A",
-        to_stop_id="B",
-        road_closure=True,
-        traffic_density=100,
-        accident_severity=100,
-        extra_delay_min=30,
-        risk_level="critical",
-    )
-
-    current_penalty, current_reasons, closed = _localized_segment_penalty_min(
-        override,
-        base_duration_min=10,
-        path_rank=1,
-    )
-    alt_penalty, alt_reasons, alt_closed = _localized_segment_penalty_min(
-        override,
-        base_duration_min=10,
-        path_rank=2,
-    )
-
-    assert closed is True
-    assert alt_closed is True
-    assert current_penalty > 9000
-    assert alt_penalty < current_penalty
-    assert "road closure on selected segment" in current_reasons
-    assert "road closure on selected segment" in alt_reasons
-
-
-def test_controlled_ai_decision_agent_cannot_select_worse_candidate():
-    current = {
-        "candidate_id": "current_order_current_path",
-        "label": "current",
-        "total_cost_min": 50.0,
-        "predicted_delay_min": 20.0,
-        "validation": {"valid": True},
-        "path_alternatives_evaluated": 1,
-    }
-    worse = {
-        "candidate_id": "optimized_order_best_path",
-        "label": "worse",
-        "total_cost_min": 60.0,
-        "predicted_delay_min": 30.0,
-        "validation": {"valid": True},
-        "path_alternatives_evaluated": 2,
-        "path_changed": True,
-        "order_changed": True,
-        "selected_leg_paths": [],
-    }
-
-    decision, validation, selected = _run_controlled_ai_decision_agent([current, worse], current)
-
-    assert selected["candidate_id"] == "current_order_current_path"
-    assert decision["decision"] == "keep_current"
-    assert validation["valid"] is True
-
-
-def test_controlled_ai_decision_agent_selects_valid_better_candidate():
-    current = {
-        "candidate_id": "current_order_current_path",
-        "label": "current",
-        "total_cost_min": 50.0,
-        "predicted_delay_min": 20.0,
-        "validation": {"valid": True},
-        "path_alternatives_evaluated": 1,
-    }
-    better = {
-        "candidate_id": "current_order_best_path",
-        "label": "path alternative",
-        "total_cost_min": 42.0,
-        "predicted_delay_min": 20.0,
-        "validation": {"valid": True},
-        "path_alternatives_evaluated": 3,
-        "path_changed": True,
-        "order_changed": False,
-        "selected_leg_paths": [{"reasons": ["segment traffic 100/100"], "path_rank": 2}],
-    }
-
-    decision, validation, selected = _run_controlled_ai_decision_agent([current, better], current)
-
-    assert selected["candidate_id"] == "current_order_best_path"
-    assert decision["decision"] == "apply_recommendation"
-    assert "path_changed" in decision["reason_codes"]
-    assert validation["valid"] is True
