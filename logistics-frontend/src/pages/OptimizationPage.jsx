@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapViewer from '../features/dashboard/components/MapViewer';
 import { useRouteStore } from '../store/useRouteStore';
@@ -8,8 +8,20 @@ import {
   LoadingState, ErrorState,
 } from '../components/shared';
 
+const DEFAULT_CONDITIONS = {
+  traffic_density: 45,
+  accident_severity: 0,
+  weather_condition: 'clear',
+  weather_severity: 10,
+  road_disruption: 0,
+  package_load: 50,
+  dispatch_hour: 9,
+  conservative_mode: false,
+};
+
 export default function OptimizationPage() {
   const navigate = useNavigate();
+  const [conditions, setConditions] = useState({ ...DEFAULT_CONDITIONS });
   const {
     loading, error, fetchData, forceFetchData,
     routes, selectedCourierId,
@@ -108,6 +120,8 @@ export default function OptimizationPage() {
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+
+
           {/* Map section */}
           <section className="page-card page-card--map">
             <div className="section-title-row">
@@ -145,29 +159,31 @@ export default function OptimizationPage() {
               <RouteValidationBanner plannedStops={plannedStops} resultStops={optimizedStops} label="Optimized" />
             )}
 
-            <div className="responsive-map-metrics">
-              <div className="map-frame map-frame--large">
-                <MapViewer
-                  routes={routes}
-                  selectedCourierId={selectedRoute?.vehicle_id ?? null}
-                  liveCouriers={liveCourierArray}
-                  pendingSuggestions={pendingSuggestions}
-                  handleSuggestionDecision={handleSuggestionDecision}
-                  scenarioResult={activeScenarioResult}
-                  showScenario={false}
-                  showAlternatives={false}
-                  showLiveCouriers={false}
-                  legendContext="planner"
-                />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                <RouteMetricGrid route={selectedRoute} scenarioResult={activeScenarioResult} />
-                <EvidencePanel
-                  stops={hasOptimizationResult ? optimizedStops : plannedStops}
-                  explanation={activeScenarioResult?.explanation || null}
-                  explanationWarning={activeScenarioResult?.should_answer === false || activeScenarioResult?.hallucination_risk === 'high'}
-                />
-              </div>
+            {/* Map — full width */}
+            <div className="map-frame map-frame--large" style={{ width: '100%', marginBottom: '1rem' }}>
+              <MapViewer
+                routes={routes}
+                selectedCourierId={selectedRoute?.vehicle_id ?? null}
+                liveCouriers={liveCourierArray}
+                pendingSuggestions={pendingSuggestions}
+                handleSuggestionDecision={handleSuggestionDecision}
+                scenarioResult={activeScenarioResult}
+                showScenario={false}
+                showAlternatives={false}
+                showLiveCouriers={false}
+                legendContext="planner"
+              />
+            </div>
+
+            {/* Metrics + Evidence — 2 col below map */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', alignItems: 'start' }}>
+              <RouteMetricGrid route={selectedRoute} scenarioResult={activeScenarioResult} />
+              <EvidencePanel
+                stops={hasOptimizationResult ? optimizedStops : plannedStops}
+                explanation={activeScenarioResult?.explanation || null}
+                explanationWarning={activeScenarioResult?.should_answer === false || activeScenarioResult?.hallucination_risk === 'high'}
+                conditions={conditions}
+              />
             </div>
           </section>
 

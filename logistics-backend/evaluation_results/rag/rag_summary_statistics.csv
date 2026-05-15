@@ -2,5 +2,5 @@
 Retriever_Score,1.0
 Context_Precision,0.7857285714285714
 Hallucination_Pass,1.0
-Answer_Score,0.7142857142857143
-Fallback_Used,0.2857142857142857
+Answer_Score,1.0
+Fallback_Used,0.0

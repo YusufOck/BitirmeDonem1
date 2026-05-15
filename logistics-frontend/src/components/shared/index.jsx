@@ -404,9 +404,42 @@ export function RouteOrderComparison({ baseline, scenario }) {
   );
 }
 
-export function EvidencePanel({ stops, explanation, explanationWarning }) {
+
+// Helper: build dynamic delay_factors from current conditions
+function buildConditionFactors(conditions, stop) {
+  if (!conditions) {
+    // Fallback to stop's existing delay_factors
+    return Array.isArray(stop?.delay_factors) ? stop.delay_factors : [];
+  }
+  const td = Number(conditions.traffic_density ?? 45);
+  const acc = Number(conditions.accident_severity ?? 0);
+  const wd = conditions.weather_condition ?? 'clear';
+  const ws = Number(conditions.weather_severity ?? 10);
+  const rd = Number(conditions.road_disruption ?? 0);
+
+  const tdLabel = td >= 80 ? 'Heavy' : td >= 55 ? 'Moderate' : td >= 30 ? 'Light' : 'Low';
+  const tdSev = td >= 80 ? 'danger' : td >= 55 ? 'warning' : 'info';
+  const accSev = acc >= 65 ? 'danger' : acc > 0 ? 'warning' : 'info';
+  const wdSev = (wd === 'snow' || wd === 'fog') && ws >= 60 ? 'danger' : ws >= 45 ? 'warning' : 'info';
+  const rdSev = rd >= 70 ? 'danger' : rd >= 35 ? 'warning' : 'info';
+
+  return [
+    { label: 'Traffic density', value: `${td}/100 (${tdLabel})`, severity: tdSev },
+    { label: 'Accident severity', value: `${acc}/100`, severity: accSev },
+    { label: 'Weather pressure', value: `${wd.charAt(0).toUpperCase() + wd.slice(1)} ${ws}/100`, severity: wdSev },
+    { label: 'Road disruption', value: `${rd}/100`, severity: rdSev },
+  ];
+}
+
+export function EvidencePanel({ stops, explanation, explanationWarning, conditions }) {
+  const topStops = (stops || [])
+    .slice()
+    .sort((a, b) => (b.ml_delay_min ?? b.expected_delay_min ?? 0) - (a.ml_delay_min ?? a.expected_delay_min ?? 0))
+    .slice(0, 5);
+
   return (
     <div className="evidence-stack">
+      {/* Optimization Method */}
       <div className="page-card page-card--soft">
         <span className="panel-kicker">Optimization method</span>
         <h2>How routes are optimized</h2>
@@ -415,29 +448,9 @@ export function EvidencePanel({ stops, explanation, explanationWarning }) {
           OR-Tools selects the optimal stop order using combined travel time and predicted delay costs.
         </p>
       </div>
-      <div className="page-card page-card--soft">
-        <span className="panel-kicker">Delay drivers</span>
-        <h2>Top delay contributors</h2>
-        <div className="driver-list">
-          {(stops || [])
-            .slice()
-            .sort((a, b) => (b.ml_delay_min ?? b.expected_delay_min ?? 0) - (a.ml_delay_min ?? a.expected_delay_min ?? 0))
-            .slice(0, 5)
-            .map((stop, index) => (
-            <div className="driver-row" key={`${stop.stop_id || index}-driver`}>
-              <strong>{stop.stop_name || stop.stop_id}</strong>
-              <span>{round(stop.ml_delay_min ?? stop.expected_delay_min ?? 0)} min ML delay</span>
-              <div>
-                {(stop.delay_factors || []).slice(0, 4).map((factor) => (
-                  <small className={`signal-chip signal-chip--${factor.severity || 'info'}`} key={`${factor.label}-${factor.value}`}>
-                    {factor.label}: {factor.value}
-                  </small>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+
+
+      {/* Explanation */}
       {explanation ? (
         <div className="page-card page-card--soft">
           <span className="panel-kicker">Optimization explanation</span>
@@ -456,6 +469,7 @@ export function EvidencePanel({ stops, explanation, explanationWarning }) {
     </div>
   );
 }
+
 
 export function SegmentEditor({ segments, onChange }) {
   const RISK_LEVELS = ['low', 'medium', 'high', 'critical'];
