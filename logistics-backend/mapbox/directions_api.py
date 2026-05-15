@@ -1,9 +1,9 @@
-import requests
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 import os
 
 from mapbox.coordinate import Coordinate
+from mapbox.http_client import mapbox_get_json
 
 def get_final_route(
     ordered_stops: List[Coordinate], 
@@ -36,18 +36,25 @@ def get_final_route(
         "access_token": access_token
     }
     
-    last_response = None
+    last_error = None
     for current_profile in dict.fromkeys([profile, "driving"]):
         url = f"https://api.mapbox.com/directions/v5/mapbox/{current_profile}/{coords_string}"
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            last_response = response
+        try:
+            data = mapbox_get_json(
+                url,
+                params=params,
+                service_name=f"Mapbox Directions ({current_profile})",
+            )
+        except Exception as exc:
+            last_error = exc
             continue
-
-        data = response.json()
         
         # The API returns a list of 'routes'. We take the first (and only) one.
-        route = data["routes"][0]
+        routes = data.get("routes") or []
+        if not routes:
+            last_error = ValueError(f"No routes returned for profile {current_profile}")
+            continue
+        route = routes[0]
         
         # Extracting the most useful parts for the frontend/dashboard
         result = {
@@ -58,8 +65,7 @@ def get_final_route(
         }
         return result
 
-    print(f"Mapbox Directions API Error: {last_response.status_code}")
-    print(last_response.text)
+    print(f"Mapbox Directions API Error: {last_error}")
     return None
 
 
@@ -88,11 +94,14 @@ def get_route_alternatives(
 
     for current_profile in dict.fromkeys([profile, "driving"]):
         url = f"https://api.mapbox.com/directions/v5/mapbox/{current_profile}/{coords_string}"
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
+        try:
+            data = mapbox_get_json(
+                url,
+                params=params,
+                service_name=f"Mapbox Alternatives ({current_profile})",
+            )
+        except Exception:
             continue
-
-        data = response.json()
         routes = data.get("routes", [])
         if len(routes) <= 1:
             return []

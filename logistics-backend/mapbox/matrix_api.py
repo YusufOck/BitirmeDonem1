@@ -1,9 +1,9 @@
-import requests
 from typing import List, Tuple, Optional
 from dotenv import load_dotenv
 import os
 
 from mapbox.coordinate import Coordinate
+from mapbox.http_client import mapbox_get_json
 
 def get_weight_matrices(
     coords: List[Coordinate], 
@@ -26,17 +26,20 @@ def get_weight_matrices(
         "access_token": access_token
     }
 
-    last_response = None
+    last_error = None
     for current_profile in dict.fromkeys([profile, "driving"]):
         url = f"https://api.mapbox.com/directions-matrix/v1/mapbox/{current_profile}/{coords_string}"
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            data = response.json()
+        try:
+            data = mapbox_get_json(
+                url,
+                params=params,
+                service_name=f"Mapbox Matrix ({current_profile})",
+            )
             return data.get("durations"), data.get("distances")
-        last_response = response
+        except Exception as exc:
+            last_error = exc
 
-    print(f"Mapbox API Error: {last_response.status_code}")
-    print(last_response.text)
+    print(f"Mapbox Matrix API Error: {last_error}")
     return None, None
 
 # Example Usage 

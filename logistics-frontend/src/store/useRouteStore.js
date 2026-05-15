@@ -22,13 +22,13 @@ import {
 const ROUTE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#aa3bff'];
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/simulation';
 const DEFAULT_SCENARIO_CONTROLS = {
-  traffic_density: 70,
-  accident_severity: 30,
-  weather_condition: 'rain',
-  weather_severity: 55,
-  road_disruption: 25,
-  package_load: 60,
-  dispatch_hour: 17,
+  traffic_density: 45,
+  accident_severity: 0,
+  weather_condition: 'clear',
+  weather_severity: 10,
+  road_disruption: 0,
+  package_load: 50,
+  dispatch_hour: 9,
   conservative_mode: false,
 };
 
@@ -65,6 +65,46 @@ const getStopOrder = (stop, vehicleRoute) => {
   return 9999;
 };
 
+const buildBaseModelFields = (stop = {}) => ({
+  hist_slack_min: stop.hist_slack_min ?? null,
+  hist_delay_probability: stop.hist_delay_probability ?? stop.delay_probability ?? null,
+  distance_from_prev_km: stop.distance_from_prev_km ?? null,
+  planned_travel_min: stop.planned_travel_min ?? null,
+  road_type: stop.road_type ?? null,
+  traffic_level: stop.traffic_level ?? null,
+  weather_condition: stop.weather_condition ?? null,
+  hour_of_day: stop.hour_of_day ?? null,
+  day_of_week: stop.day_of_week ?? null,
+  congestion_ratio_mean: stop.congestion_ratio_mean ?? null,
+  incident_rate: stop.incident_rate ?? null,
+  road_surface_condition: stop.road_surface_condition ?? null,
+  road_surface_condition_enc: stop.road_surface_condition_enc ?? null,
+  delay_risk_score_mean: stop.delay_risk_score_mean ?? null,
+  package_count: stop.package_count ?? null,
+  package_weight_kg: stop.package_weight_kg ?? null,
+  vehicle_type: stop.vehicle_type ?? null,
+  road_incident: stop.road_incident ?? null,
+  incident_severity: stop.incident_severity ?? null,
+  temperature_c: stop.temperature_c ?? null,
+  precipitation_mm: stop.precipitation_mm ?? null,
+  wind_speed_kmh: stop.wind_speed_kmh ?? null,
+  visibility_km: stop.visibility_km ?? null,
+  overall_delay_factor: stop.overall_delay_factor ?? null,
+  time_window_slack_min: stop.time_window_slack_min ?? null,
+  time_window_duration_min: stop.time_window_duration_min ?? null,
+  feature_source: stop.feature_source ?? null,
+  delay_factors: Array.isArray(stop.delay_factors) ? stop.delay_factors : [],
+});
+
+const scenarioDelayForStop = (stop = {}) => round(
+  stop.operational_delay_min
+  ?? stop.schedule_delay_min
+  ?? stop.expected_delay_min
+  ?? stop.ml_delay_min
+  ?? 0,
+  1,
+);
+
 const getVehicleStops = (optimizedRoute, vehicleRoute) => {
   return (optimizedRoute || [])
     .filter((stop) => stop.vehicle_id === vehicleRoute.vehicle_id)
@@ -74,6 +114,7 @@ const getVehicleStops = (optimizedRoute, vehicleRoute) => {
       const delay = Number(stop.expected_delay_min || 0);
       return {
         ...stop,
+        baseModelFields: stop.baseModelFields || buildBaseModelFields(stop),
         displaySequence: index + 1,
         etaLabel: delay > 0 ? `+${round(delay)} min delay` : 'On time',
         plannedTravelLabel: travel > 0 ? `${round(travel)} min travel` : 'Travel calculated',
@@ -198,131 +239,56 @@ const alignScenarioStopsWithRoute = (scenarioStops = [], routeStops = []) => (
   })
 );
 
-const serializeStopForScenario = (stop, index) => ({
-  stop_sequence: Number(stop.stop_sequence || stop.displaySequence || index + 1),
-  cumulative_delay_min: Number(stop.cumulative_delay_min || 0),
-  prev_stop_delay_min: Number(stop.prev_stop_delay_min || 0),
-  time_window_slack_min: Number(stop.time_window_slack_min || 480),
-  hist_slack_min: Number(stop.hist_slack_min || 54.69),
-  hist_delay_probability: Number(stop.hist_delay_probability || stop.delay_probability || 0.25),
-  distance_from_prev_km: stop.distance_from_prev_km ?? null,
-  planned_travel_min: stop.planned_travel_min ?? null,
-  road_type: stop.road_type ?? null,
-  traffic_level: stop.traffic_level ?? null,
-  weather_condition: stop.weather_condition ?? null,
-  hour_of_day: stop.hour_of_day ?? null,
-  day_of_week: stop.day_of_week ?? null,
-  congestion_ratio_mean: stop.congestion_ratio_mean ?? null,
-  incident_rate: stop.incident_rate ?? null,
-  road_surface_condition: stop.road_surface_condition ?? null,
-  road_surface_condition_enc: stop.road_surface_condition_enc ?? null,
-  delay_risk_score_mean: stop.delay_risk_score_mean ?? null,
-  package_count: stop.package_count ?? null,
-  package_weight_kg: stop.package_weight_kg ?? null,
-  vehicle_type: stop.vehicle_type ?? null,
-  road_incident: stop.road_incident ?? null,
-  incident_severity: stop.incident_severity ?? null,
-  temperature_c: stop.temperature_c ?? null,
-  precipitation_mm: stop.precipitation_mm ?? null,
-  wind_speed_kmh: stop.wind_speed_kmh ?? null,
-  visibility_km: stop.visibility_km ?? null,
-  overall_delay_factor: stop.overall_delay_factor ?? null,
-  time_window_duration_min: stop.time_window_duration_min ?? null,
-  stop_id: stop.stop_id ?? null,
-  stop_name: stop.stop_name ?? null,
-  latitude: stop.latitude,
-  longitude: stop.longitude,
-  feature_source: stop.feature_source ?? null,
-  delay_factors: Array.isArray(stop.delay_factors) ? stop.delay_factors : [],
-});
+const serializeStopForScenario = (stop, index) => {
+  const source = stop.baseModelFields || stop;
+  const payload = {
+    original_stop_index: Number.isFinite(Number(stop.original_stop_index))
+      ? Number(stop.original_stop_index)
+      : index,
+    stop_sequence: Number(stop.stop_sequence || stop.displaySequence || index + 1),
+    cumulative_delay_min: 0,
+    prev_stop_delay_min: 0,
+    time_window_slack_min: Number(source.time_window_slack_min ?? stop.time_window_slack_min ?? 480),
+    hist_slack_min: Number(source.hist_slack_min ?? 54.69),
+    hist_delay_probability: Number(source.hist_delay_probability ?? stop.delay_probability ?? 0.25),
+    distance_from_prev_km: source.distance_from_prev_km ?? null,
+    planned_travel_min: stop.planned_travel_min ?? source.planned_travel_min ?? null,
+    road_type: source.road_type ?? null,
+    traffic_level: source.traffic_level ?? stop.traffic_level ?? null,
+    weather_condition: source.weather_condition ?? stop.weather_condition ?? null,
+    hour_of_day: source.hour_of_day ?? stop.hour_of_day ?? null,
+    day_of_week: source.day_of_week ?? stop.day_of_week ?? null,
+    congestion_ratio_mean: source.congestion_ratio_mean ?? stop.congestion_ratio_mean ?? null,
+    incident_rate: source.incident_rate ?? stop.incident_rate ?? null,
+    road_surface_condition: source.road_surface_condition ?? stop.road_surface_condition ?? null,
+    road_surface_condition_enc: source.road_surface_condition_enc ?? stop.road_surface_condition_enc ?? null,
+    delay_risk_score_mean: source.delay_risk_score_mean ?? stop.delay_risk_score_mean ?? null,
+    package_count: source.package_count ?? stop.package_count ?? null,
+    package_weight_kg: source.package_weight_kg ?? stop.package_weight_kg ?? null,
+    vehicle_type: source.vehicle_type ?? stop.vehicleType ?? stop.vehicle_type ?? null,
+    road_incident: source.road_incident ?? stop.road_incident ?? null,
+    incident_severity: source.incident_severity ?? stop.incident_severity ?? null,
+    temperature_c: source.temperature_c ?? stop.temperature_c ?? null,
+    precipitation_mm: source.precipitation_mm ?? stop.precipitation_mm ?? null,
+    wind_speed_kmh: source.wind_speed_kmh ?? stop.wind_speed_kmh ?? null,
+    visibility_km: source.visibility_km ?? stop.visibility_km ?? null,
+    overall_delay_factor: source.overall_delay_factor ?? stop.overall_delay_factor ?? null,
+    time_window_duration_min: source.time_window_duration_min ?? stop.time_window_duration_min ?? null,
+    stop_id: stop.stop_id ?? source.stop_id ?? null,
+    stop_name: stop.stop_name ?? source.stop_name ?? null,
+    latitude: stop.latitude ?? source.latitude,
+    longitude: stop.longitude ?? source.longitude,
+    feature_source: source.feature_source ?? stop.feature_source ?? null,
+    delay_factors: Array.isArray(source.delay_factors) ? source.delay_factors : [],
+  };
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== null && value !== undefined),
+  );
+};
 
 const getScenarioCoordinates = (scenarioResult) => (
   scenarioResult?.scenarioGeometry?.geometry?.coordinates || []
 );
-
-const haversineKm = (lat1, lon1, lat2, lon2) => {
-  const radiusKm = 6371;
-  const toRad = (value) => (Number(value) * Math.PI) / 180;
-  const aLat = toRad(lat1);
-  const bLat = toRad(lat2);
-  const dLat = toRad(Number(lat2) - Number(lat1));
-  const dLon = toRad(Number(lon2) - Number(lon1));
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(aLat) * Math.cos(bLat) * Math.sin(dLon / 2) ** 2;
-  return radiusKm * 2 * Math.asin(Math.sqrt(a));
-};
-
-const buildRouteCumulativeKm = (coords = []) => {
-  const cumulative = [0];
-  for (let index = 1; index < coords.length; index += 1) {
-    cumulative.push(
-      cumulative[index - 1]
-      + haversineKm(coords[index - 1][1], coords[index - 1][0], coords[index][1], coords[index][0]),
-    );
-  }
-  return cumulative;
-};
-
-const projectStopProgressKm = (coords = [], cumulative = [], stop = {}) => {
-  if (!Array.isArray(coords) || coords.length < 2) return Number.POSITIVE_INFINITY;
-  const stopLat = Number(stop.latitude ?? stop.lat);
-  const stopLon = Number(stop.longitude ?? stop.lon);
-  if (!Number.isFinite(stopLat) || !Number.isFinite(stopLon)) return Number.POSITIVE_INFINITY;
-
-  const refLatRad = (stopLat * Math.PI) / 180;
-  const toLocalKm = ([lon, lat]) => ([
-    (Number(lon) - stopLon) * 111.32 * Math.cos(refLatRad),
-    (Number(lat) - stopLat) * 110.574,
-  ]);
-
-  let bestDistanceSq = Number.POSITIVE_INFINITY;
-  let bestProgressKm = cumulative[0] || 0;
-  for (let index = 0; index < coords.length - 1; index += 1) {
-    const [ax, ay] = toLocalKm(coords[index]);
-    const [bx, by] = toLocalKm(coords[index + 1]);
-    const vx = bx - ax;
-    const vy = by - ay;
-    const denom = vx * vx + vy * vy;
-    const t = denom === 0 ? 0 : Math.max(0, Math.min(1, -((ax * vx + ay * vy) / denom)));
-    const px = ax + t * vx;
-    const py = ay + t * vy;
-    const distanceSq = px * px + py * py;
-    if (distanceSq < bestDistanceSq) {
-      bestDistanceSq = distanceSq;
-      bestProgressKm = (cumulative[index] || 0) + ((cumulative[index + 1] || 0) - (cumulative[index] || 0)) * t;
-    }
-  }
-  return bestProgressKm;
-};
-
-const orderStopsByRouteProgress = (stops = [], geometryFeature) => {
-  const coords = geometryFeature?.geometry?.coordinates || [];
-  if (!Array.isArray(coords) || coords.length < 2) return stops;
-  const cumulative = buildRouteCumulativeKm(coords);
-  return [...stops]
-    .map((stop, originalIndex) => ({
-      ...stop,
-      _routeProgressKm: projectStopProgressKm(coords, cumulative, stop),
-      _originalIndex: originalIndex,
-    }))
-    .sort((a, b) => (
-      (a._routeProgressKm - b._routeProgressKm)
-      || (Number(a.optimized_position || 0) - Number(b.optimized_position || 0))
-      || (a._originalIndex - b._originalIndex)
-    ))
-    .map((stop, index) => {
-      const routeProgressKm = stop._routeProgressKm;
-      const cleanStop = { ...stop };
-      delete cleanStop._routeProgressKm;
-      delete cleanStop._originalIndex;
-      return {
-        ...cleanStop,
-        optimized_position: index,
-        displaySequence: index + 1,
-        route_progress_km: Number.isFinite(routeProgressKm) ? round(routeProgressKm, 3) : null,
-      };
-    });
-};
 
 const normalizeScenarioResult = (result, vehicleId, route = null) => {
   const scenarioGeometry = asFeature(result.scenario_geometry);
@@ -335,12 +301,88 @@ const normalizeScenarioResult = (result, vehicleId, route = null) => {
     scenarioGeometry,
     baseline_route: alignScenarioStopsWithRoute(result.baseline_route || [], routeStops),
     current_order_route: alignScenarioStopsWithRoute(result.current_order_route || result.baseline_route || [], routeStops),
-    scenario_route: orderStopsByRouteProgress(alignedScenarioRoute, scenarioGeometry),
+    scenario_route: [...alignedScenarioRoute]
+      .sort((a, b) => Number(a.optimized_position || 0) - Number(b.optimized_position || 0))
+      .map((stop, index) => ({
+        ...stop,
+        optimized_position: index,
+        displaySequence: index + 1,
+      })),
     mapboxAlternatives: (result.mapbox_alternatives || []).map((alternative) => ({
       ...alternative,
       geometry: asFeature(alternative.geometry),
     })),
   };
+};
+
+const buildRouteMetricsFromScenario = (route, scenarioResult) => {
+  const scenarioMetrics = scenarioResult?.scenario_metrics || scenarioResult?.scenarioMetrics || {};
+  return {
+    distanceKm: round(scenarioMetrics.distance_km ?? route?.metrics?.distanceKm ?? 0, 1),
+    durationMin: round(scenarioMetrics.duration_min ?? route?.metrics?.durationMin ?? 0, 0),
+    expectedDelayMin: round(
+      scenarioMetrics.expected_delay_min
+      ?? scenarioResult?.optimization_delta?.optimized_operational_delay_min
+      ?? route?.metrics?.expectedDelayMin
+      ?? 0,
+      1,
+    ),
+    worstCaseDelayMin: round(
+      scenarioResult?.scenario_summary?.worst_case_total_delay_min
+      ?? route?.metrics?.worstCaseDelayMin
+      ?? 0,
+      1,
+    ),
+    severeStops: Number(scenarioMetrics.severe_stops ?? route?.metrics?.severeStops ?? 0),
+    highRiskStops: Number(scenarioMetrics.high_risk_stops ?? route?.metrics?.highRiskStops ?? 0),
+    stopCount: Number((scenarioResult?.scenario_route || []).length || route?.metrics?.stopCount || route?.stops?.length || 0),
+  };
+};
+
+const buildComparisonFromMetrics = (existingComparison = {}, metrics = {}) => {
+  const originalDistanceKm = existingComparison.originalDistanceKm ?? metrics.distanceKm ?? 0;
+  const originalDurationMin = existingComparison.originalDurationMin ?? metrics.durationMin ?? 0;
+  const optimizedDistanceKm = round(metrics.distanceKm ?? existingComparison.optimizedDistanceKm ?? 0, 1);
+  const optimizedDurationMin = round(metrics.durationMin ?? existingComparison.optimizedDurationMin ?? 0, 0);
+  const distanceDeltaKm = round(originalDistanceKm - optimizedDistanceKm, 1);
+  const durationDeltaMin = round(originalDurationMin - optimizedDurationMin, 0);
+
+  return {
+    originalDistanceKm,
+    optimizedDistanceKm,
+    distanceDeltaKm,
+    originalDurationMin,
+    optimizedDurationMin,
+    durationDeltaMin,
+    distanceSaved: distanceDeltaKm > 0,
+    durationSaved: durationDeltaMin > 0,
+  };
+};
+
+const buildFleetRouteSummary = (routes = [], previousSummary = null) => ({
+  ...(previousSummary || {}),
+  expected_total_delay_min: round(
+    routes.reduce((sum, route) => sum + Number(route.metrics?.expectedDelayMin || 0), 0),
+    1,
+  ),
+  high_risk_stop_count: routes.reduce((sum, route) => sum + Number(route.metrics?.highRiskStops || 0), 0),
+  severe_stop_count: routes.reduce((sum, route) => sum + Number(route.metrics?.severeStops || 0), 0),
+});
+
+const formatActionError = (error, fallback = 'Unexpected error') => {
+  if (typeof error?.message === 'string' && error.message.trim() && error.message !== '[object Object]') {
+    return error.message;
+  }
+  if (typeof error === 'string' && error.trim()) return error;
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== '{}' && serialized !== '"[object Object]"') {
+      return serialized;
+    }
+  } catch {
+    // Ignore JSON serialization failures and use fallback below.
+  }
+  return fallback;
 };
 
 const getControlsForRoute = (state, vehicleId) => {
@@ -354,12 +396,12 @@ const normalizeSegmentOverrides = (segmentOverrides = {}) => (
     .map((override) => ({
       from_stop_id: String(override.from_stop_id),
       to_stop_id: String(override.to_stop_id),
-      traffic_density: Number(override.traffic_density || 0),
-      accident_severity: Number(override.accident_severity || 0),
+      traffic_density: Number(override.traffic_density ?? 0),
+      accident_severity: Number(override.accident_severity ?? 0),
       road_closure: Boolean(override.road_closure),
-      weather_severity: Number(override.weather_severity || 0),
-      speed_reduction: Number(override.speed_reduction || 0),
-      extra_delay_min: Number(override.extra_delay_min || 0),
+      weather_severity: Number(override.weather_severity ?? 0),
+      speed_reduction: Number(override.speed_reduction ?? 0),
+      extra_delay_min: Number(override.extra_delay_min ?? 0),
       risk_level: override.risk_level || 'low',
       priority: Number(override.priority || 50),
       road_type: override.road_type || 'urban',
@@ -794,6 +836,8 @@ export const useRouteStore = create((set, get) => ({
       // Build updated routes — MERGE completed stops with scenario route
       // so route.stops always contains ALL stops (completed + remaining).
       let updatedRoutes = state.routes;
+      let updatedCouriers = state.couriers;
+      let updatedRouteSummary = state.routeSummary;
       if (scenarioResult && route) {
         updatedRoutes = state.routes.map((r) => {
           if (r.vehicle_id !== vehicleId) return r;
@@ -804,25 +848,72 @@ export const useRouteStore = create((set, get) => ({
           // Collect completed stops from current route that are NOT in scenario result
           const completedStopsToPreserve = r.stops
             .filter((s) => completedIds.has(String(s.stop_id)) && !scenarioStopIds.has(String(s.stop_id)))
-            .map((s) => ({ ...s, status: 'completed' }));
+            .map((s, index) => ({
+              ...s,
+              baseModelFields: s.baseModelFields || buildBaseModelFields(s),
+              status: 'completed',
+              displaySequence: index + 1,
+            }));
 
           // Merge: completed stops first, then scenario stops with status correction
           const mergedStops = [
             ...completedStopsToPreserve,
             ...scenarioStops.map((s, index) => ({
               ...s,
+              baseModelFields: s.baseModelFields || buildBaseModelFields(s),
               status: 'pending',
               displaySequence: completedStopsToPreserve.length + index + 1,
+              etaLabel: scenarioDelayForStop(s) > 0 ? `+${scenarioDelayForStop(s)} min delay` : 'On time',
+              plannedTravelLabel: Number(s.planned_travel_min || 0) > 0
+                ? `${round(s.planned_travel_min)} min travel`
+                : 'Travel calculated',
             })),
           ];
+          const nextMetrics = {
+            ...buildRouteMetricsFromScenario(r, scenarioResult),
+            stopCount: mergedStops.length,
+          };
+          const nextComparison = buildComparisonFromMetrics(r.comparison, nextMetrics);
 
           return {
             ...r,
             originalGeometry: r.originalGeometry || r.geometry,
             geometry: newGeometry ? { ...newGeometry, _ts: Date.now() } : r.geometry,
+            metrics: nextMetrics,
+            comparison: nextComparison,
             stops: mergedStops,
           };
         });
+
+        updatedCouriers = state.couriers.map((courier) => {
+          if (courier.id !== vehicleId) return courier;
+          const updatedRoute = updatedRoutes.find((r) => r.vehicle_id === vehicleId);
+          if (!updatedRoute) return courier;
+          const completedCount = updatedRoute.stops.filter((stop) => completedIds.has(String(stop.stop_id))).length;
+          const status = getStatusFromMetrics({
+            severe_stop_count: updatedRoute.metrics?.severeStops || 0,
+            high_risk_stop_count: updatedRoute.metrics?.highRiskStops || 0,
+            total_expected_delay_min: updatedRoute.metrics?.expectedDelayMin || 0,
+          });
+          return {
+            ...courier,
+            stops: updatedRoute.stops,
+            currentStatus: status,
+            statusTone: getStatusTone(status),
+            stopsRemaining: Math.max(updatedRoute.stops.length - completedCount, 0),
+            routeMetrics: updatedRoute.metrics,
+            comparison: updatedRoute.comparison,
+            stats: {
+              completedStops: completedCount,
+              totalStops: updatedRoute.stops.length,
+              totalExpectedDelay: updatedRoute.metrics?.expectedDelayMin || 0,
+              severeStops: updatedRoute.metrics?.severeStops || 0,
+              highRiskStops: updatedRoute.metrics?.highRiskStops || 0,
+            },
+          };
+        });
+
+        updatedRouteSummary = buildFleetRouteSummary(updatedRoutes, state.routeSummary);
       }
 
       // Clear recommendation from results (it's now the active route)
@@ -831,6 +922,8 @@ export const useRouteStore = create((set, get) => ({
 
       set({
         routes: updatedRoutes,
+        couriers: updatedCouriers,
+        routeSummary: updatedRouteSummary,
         routeLifecycleByVehicleId: {
           ...state.routeLifecycleByVehicleId,
           [vehicleId]: stateData,
@@ -869,7 +962,10 @@ export const useRouteStore = create((set, get) => ({
       }
     } catch (err) {
       console.error('Failed to apply recommendation:', err);
-      set({ feedbackMessage: 'Failed to apply recommendation: ' + err.message, feedbackType: 'error' });
+      set({
+        feedbackMessage: 'Failed to apply recommendation: ' + formatActionError(err, 'Apply request failed.'),
+        feedbackType: 'error',
+      });
     }
   },
 

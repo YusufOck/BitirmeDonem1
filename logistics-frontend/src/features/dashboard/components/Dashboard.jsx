@@ -62,12 +62,6 @@ const formatMetric = (value, fallback = '--') => (
   Number.isFinite(Number(value)) ? String(value) : fallback
 );
 
-const formatDelta = (value, unit) => {
-  if (!Number.isFinite(Number(value))) return '--';
-  const sign = Number(value) > 0 ? '+' : '';
-  return `${sign}${round(value)}${unit ? ` ${unit}` : ''}`;
-};
-
 const getSelectedRoute = (routes, selectedCourierId) => (
   routes.find((route) => route.vehicle_id === selectedCourierId) || routes[0] || null
 );
@@ -222,22 +216,44 @@ function WorkflowSteps() {
 
 function RouteMetricGrid({ route, scenarioResult }) {
   const comparison = route?.comparison || {};
-  const scenarioMetrics = scenarioResult?.scenarioMetrics;
+  const scenarioMetrics = scenarioResult?.scenarioMetrics || scenarioResult?.scenario_metrics;
+  const baselineMetrics = scenarioResult?.baselineMetrics || scenarioResult?.baseline_metrics;
+  const optimizationDelta = scenarioResult?.optimization_delta;
+  const currentDelay = round(
+    baselineMetrics?.expected_delay_min
+    ?? route?.metrics?.expectedDelayMin
+    ?? 0,
+  );
+  const recommendedDelay = scenarioMetrics?.expected_delay_min != null
+    ? round(scenarioMetrics.expected_delay_min)
+    : null;
+  const savedDelay = optimizationDelta?.operational_delay_saved_min != null
+    ? round(optimizationDelta.operational_delay_saved_min)
+    : null;
   return (
     <div className="metric-grid">
-      <MetricCard label="Original" value={`${formatMetric(comparison.originalDistanceKm)} km`} subvalue={`${formatMetric(comparison.originalDurationMin)} min`} />
-      <MetricCard label="Optimized" value={`${formatMetric(comparison.optimizedDistanceKm || route?.metrics?.distanceKm)} km`} subvalue={`${formatMetric(comparison.optimizedDurationMin || route?.metrics?.durationMin)} min`} tone="blue" />
       <MetricCard
-        label="Scenario"
-        value={scenarioMetrics ? `${scenarioMetrics.distance_km} km` : '--'}
-        subvalue={scenarioMetrics ? `${scenarioMetrics.duration_min} min` : 'not run'}
-        tone="cyan"
+        label={scenarioMetrics ? "Current Route" : "Original"}
+        value={`${formatMetric(baselineMetrics?.distance_km ?? comparison.originalDistanceKm ?? route?.metrics?.distanceKm)} km`}
+        subvalue={`${formatMetric(baselineMetrics?.duration_min ?? comparison.originalDurationMin ?? route?.metrics?.durationMin)} min road time`}
       />
       <MetricCard
-        label="Delay impact"
-        value={scenarioResult ? formatDelta(scenarioResult.delta?.expected_delay_min, 'min') : `${round(route?.metrics?.expectedDelayMin || 0)} min`}
-        subvalue={scenarioResult ? 'scenario vs baseline' : 'ML prediction'}
-        tone={scenarioResult?.delta?.expected_delay_min > 0 ? 'warning' : 'success'}
+        label={scenarioMetrics ? "Recommended Route" : "Optimized"}
+        value={`${formatMetric(scenarioMetrics?.distance_km ?? comparison.optimizedDistanceKm ?? route?.metrics?.distanceKm)} km`}
+        subvalue={`${formatMetric(scenarioMetrics?.duration_min ?? comparison.optimizedDurationMin ?? route?.metrics?.durationMin)} min road time`}
+        tone="blue"
+      />
+      <MetricCard
+        label="Current Delay Risk"
+        value={`${currentDelay} min`}
+        subvalue={scenarioMetrics ? 'same updated conditions' : 'active route ML sum'}
+        tone={currentDelay > 60 ? 'danger' : (currentDelay > 20 ? 'warning' : 'success')}
+      />
+      <MetricCard
+        label="Recommended Delay Risk"
+        value={recommendedDelay !== null ? `${recommendedDelay} min` : '--'}
+        subvalue={savedDelay !== null ? `${savedDelay > 0 ? '-' : savedDelay < 0 ? '+' : ''}${Math.abs(savedDelay)} min change` : 'run scenario to see'}
+        tone={recommendedDelay !== null ? (savedDelay > 0 ? 'success' : 'warning') : 'neutral'}
       />
     </div>
   );

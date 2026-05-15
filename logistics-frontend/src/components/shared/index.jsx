@@ -19,32 +19,57 @@ export function MetricCard({ label, value, subvalue, tone = 'neutral' }) {
 export function RouteMetricGrid({ route, scenarioResult }) {
   const comparison = route?.comparison || {};
   const scenarioMetrics = scenarioResult?.scenarioMetrics || scenarioResult?.scenario_metrics;
+  const baselineMetrics = scenarioResult?.baselineMetrics || scenarioResult?.baseline_metrics;
+  const optimizationDelta = scenarioResult?.optimization_delta;
+
+  const activeDelay = baselineMetrics
+    ? round(baselineMetrics.expected_delay_min ?? 0)
+    : round(route?.metrics?.expectedDelayMin || 0);
+
+  const activeDistance = baselineMetrics
+    ? round(baselineMetrics.distance_km ?? comparison.originalDistanceKm ?? route?.metrics?.distanceKm ?? 0, 1)
+    : round(comparison.originalDistanceKm ?? route?.metrics?.distanceKm ?? 0, 1);
+  const activeDuration = baselineMetrics
+    ? round(baselineMetrics.duration_min ?? route?.metrics?.durationMin ?? 0, 0)
+    : round(comparison.originalDurationMin ?? route?.metrics?.durationMin ?? 0, 0);
+  const optimizedDistance = scenarioMetrics
+    ? round(scenarioMetrics.distance_km ?? 0, 1)
+    : round(comparison.optimizedDistanceKm ?? route?.metrics?.distanceKm ?? 0, 1);
+  const optimizedDuration = scenarioMetrics
+    ? round(scenarioMetrics.duration_min ?? 0, 0)
+    : round(comparison.optimizedDurationMin ?? route?.metrics?.durationMin ?? 0, 0);
+  const recommendedDelay = scenarioMetrics ? round(scenarioMetrics.expected_delay_min ?? 0) : null;
+  const savedDelay = optimizationDelta ? round(optimizationDelta.operational_delay_saved_min ?? 0) : null;
+  const savedRouteCost = optimizationDelta ? round(optimizationDelta.route_cost_saved_min ?? 0) : null;
+
   return (
     <div className="metric-grid">
       <MetricCard
-        label="Original"
-        value={`${comparison.originalDistanceKm ?? '--'} km`}
-        subvalue={`${comparison.originalDurationMin ?? '--'} min`}
+        label={scenarioMetrics ? 'Current Route' : 'Original Route'}
+        value={`${activeDistance} km`}
+        subvalue={`${activeDuration} min road time`}
       />
       <MetricCard
-        label="Optimized"
-        value={`${comparison.optimizedDistanceKm || route?.metrics?.distanceKm || '--'} km`}
-        subvalue={`${comparison.optimizedDurationMin || route?.metrics?.durationMin || '--'} min`}
+        label={scenarioMetrics ? 'Recommended Route' : 'Optimized Route'}
+        value={`${optimizedDistance} km`}
+        subvalue={`${optimizedDuration} min road time`}
         tone="blue"
       />
       <MetricCard
-        label="Scenario"
-        value={scenarioMetrics ? `${scenarioMetrics.distance_km} km` : '--'}
-        subvalue={scenarioMetrics ? `${scenarioMetrics.duration_min} min` : 'not run'}
-        tone="cyan"
+        label="Current Delay Risk"
+        value={`${activeDelay} min`}
+        subvalue={scenarioMetrics ? 'same updated conditions' : 'active route ML sum'}
+        tone={activeDelay > 60 ? 'danger' : (activeDelay > 20 ? 'warning' : 'success')}
       />
       <MetricCard
-        label="Delay impact"
-        value={scenarioResult?.delta?.expected_delay_min != null
-          ? `${round(scenarioResult.delta.expected_delay_min)} min`
-          : `${round(route?.metrics?.expectedDelayMin || 0)} min`}
-        subvalue={scenarioResult ? 'scenario vs baseline' : 'ML prediction'}
-        tone={scenarioResult?.delta?.expected_delay_min > 0 ? 'warning' : 'success'}
+        label="Recommendation Benefit"
+        value={recommendedDelay !== null ? `${recommendedDelay} min` : '--'}
+        subvalue={savedRouteCost !== null
+          ? `${savedRouteCost > 0 ? '-' : savedRouteCost < 0 ? '+' : ''}${Math.abs(savedRouteCost)} min total cost`
+          : savedDelay !== null
+            ? `${savedDelay > 0 ? '-' : savedDelay < 0 ? '+' : ''}${Math.abs(savedDelay)} min delay`
+            : 'run scenario to see'}
+        tone={recommendedDelay !== null ? (savedRouteCost > 0 ? 'success' : 'warning') : 'neutral'}
       />
     </div>
   );
@@ -90,6 +115,13 @@ export function StopsTable({ stops, compact = false }) {
           {stops.map((stop, index) => {
             const factors = stop.delay_factors || [];
             const topFactor = factors[0];
+            const delayMin = round(
+              stop.operational_delay_min
+              ?? stop.schedule_delay_min
+              ?? stop.expected_delay_min
+              ?? stop.ml_delay_min
+              ?? 0,
+            );
             return (
               <tr key={`${stop.stop_id || index}-${index}`}>
                 <td><span className="order-pill">{index + 1}</span></td>
@@ -97,7 +129,7 @@ export function StopsTable({ stops, compact = false }) {
                   <strong>{stop.stop_name || stop.stop_id || `Stop ${index + 1}`}</strong>
                   <small>{stop.plannedTravelLabel || `${round(stop.planned_travel_min || 0)} min travel`}</small>
                 </td>
-                <td>{round(stop.expected_delay_min || 0)} min</td>
+                <td>{delayMin} min</td>
                 <td>{topFactor
                   ? <span className={`signal-chip signal-chip--${topFactor.severity || 'info'}`}>{topFactor.label}</span>
                   : '--'}
@@ -237,14 +269,14 @@ export function DelayImprovementPanel({ baseline, scenario }) {
       )}
       <div className="metric-grid">
         <MetricCard label="Current route delay-risk" value={`${beforeTotal} min`} subvalue="same updated conditions" tone="warning" />
-        <MetricCard label="Recommended route delay-risk" value={`${afterTotal} min`} subvalue="same updated conditions" tone="blue" />
+        <MetricCard label="Recommended delay-risk" value={`${afterTotal} min`} subvalue="same updated conditions" tone="blue" />
         <MetricCard
-          label={saved > 0 ? 'Delay-risk saved' : 'No useful saving'}
+          label={saved > 0 ? 'Delay saved' : 'No useful saving'}
           value={`${saved > 0 ? '-' : saved < 0 ? '+' : ''}${Math.abs(saved)} min`}
           subvalue={saved > 0 ? 'applicable benefit' : saved < 0 ? 'recommendation is worse' : 'keep current route'}
           tone={saved > 0 ? 'success' : 'warning'}
         />
-        <MetricCard label="Stops improved" value={`${improvedCount}/${after.length}`} subvalue="same per-stop delay-risk metric" tone="cyan" />
+        <MetricCard label="Stops improved" value={`${improvedCount}/${after.length}`} subvalue="same per-stop delay metric" tone="cyan" />
       </div>
       <div className="table-shell table-shell--compact" style={{ marginTop: '0.75rem' }}>
         <table>
@@ -332,10 +364,14 @@ export function EvidencePanel({ stops, explanation, explanationWarning }) {
         <span className="panel-kicker">Delay drivers</span>
         <h2>Top delay contributors</h2>
         <div className="driver-list">
-          {(stops || []).slice(0, 4).map((stop, index) => (
+          {(stops || [])
+            .slice()
+            .sort((a, b) => (b.ml_delay_min ?? b.expected_delay_min ?? 0) - (a.ml_delay_min ?? a.expected_delay_min ?? 0))
+            .slice(0, 5)
+            .map((stop, index) => (
             <div className="driver-row" key={`${stop.stop_id || index}-driver`}>
               <strong>{stop.stop_name || stop.stop_id}</strong>
-              <span>{round(stop.expected_delay_min || 0)} min expected</span>
+              <span>{round(stop.ml_delay_min ?? stop.expected_delay_min ?? 0)} min ML delay</span>
               <div>
                 {(stop.delay_factors || []).slice(0, 4).map((factor) => (
                   <small className={`signal-chip signal-chip--${factor.severity || 'info'}`} key={`${factor.label}-${factor.value}`}>

@@ -218,7 +218,7 @@ class OptimizedStop(BaseModel):
     )
     operational_delay_min: float | None = Field(
         default=None,
-        description="Comparable per-stop delay metric: ML delay plus ETA/window lateness.",
+        description="Comparable user-facing per-stop delay metric: ML expected delay. ETA/window lateness is reported separately.",
     )
     calibration_applied: bool = Field(default=False, description="True when runtime road-condition safety calibration raised delay/risk")
     calibration_reasons: list[str] = Field(default_factory=list, description="Signals that caused runtime safety calibration")
@@ -553,6 +553,37 @@ class ScenarioReoptimizationResponse(BaseModel):
     optimization_delta: dict = Field(default_factory=dict)
     schedule_comparison: dict = Field(default_factory=dict)
     mapbox_alternatives: list[dict] = Field(default_factory=list)
+    debug_breakdown: dict = Field(default_factory=dict)
+    candidates_evaluated: int = Field(
+        default=0,
+        description="Number of backend-generated route candidates scored for this scenario.",
+    )
+    stop_orders_evaluated: int = Field(
+        default=0,
+        description="Distinct stop orders evaluated by OR-Tools/current-order candidate generation.",
+    )
+    path_alternatives_evaluated: int = Field(
+        default=0,
+        description="Total Mapbox road-path alternatives evaluated across candidate legs.",
+    )
+    candidate_routes: list[dict] = Field(
+        default_factory=list,
+        description="Auditable candidate route scores. UI should show summaries, not every geometry.",
+    )
+    selected_candidate_id: str | None = None
+    selected_candidate: dict = Field(default_factory=dict)
+    change_type: Literal[
+        "order_changed",
+        "path_changed",
+        "both_changed",
+        "cost_changed",
+        "no_better_route",
+    ] = "no_better_route"
+    no_better_route: bool = False
+    validation: dict = Field(default_factory=dict)
+    ai_decision: dict = Field(default_factory=dict)
+    validated_decision: dict = Field(default_factory=dict)
+    decision_facts: dict = Field(default_factory=dict)
 
 
 class ScenarioCreateRequest(BaseModel):

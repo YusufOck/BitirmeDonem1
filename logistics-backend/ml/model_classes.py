@@ -78,7 +78,10 @@ def _condition_floor(row) -> tuple[float, float, list[str]]:
             _clip01((0.75 - _num(congestion_ratio, 0.75)) / 0.75),
         )
 
-    weather_pressure = {0: 0.0, 1: 0.0, 2: 0.55, 3: 0.35, 4: 0.85, 5: 0.18}.get(weather_code, 0.0)
+    weather_pressure = {0: 0.0, 1: 0.0, 2: 0.55, 3: 0.35, 4: 0.85, 5: 0.45}.get(weather_code, 0.0)
+    wind_speed = _num(row.get("wind_speed_kmh", 0.0), 0.0)
+    if wind_speed >= 45.0:
+        weather_pressure = max(weather_pressure, 0.50)
     incident_pressure = max(
         _clip01(row.get("road_incident", 0)),
         _clip01(row.get("incident_severity", 0.0)),

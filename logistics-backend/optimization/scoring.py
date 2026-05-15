@@ -96,9 +96,9 @@ def _weather_penalty(stop: dict[str, Any]) -> tuple[float, str | None]:
 
 
 def _accident_penalty(stop: dict[str, Any]) -> tuple[float, str | None]:
-    incident = int(stop.get("road_incident") or 0)
-    severity = float(stop.get("incident_severity") or 0.0)
-    rate = float(stop.get("incident_rate") or 0.0)
+    incident = int(_num_or_default(stop.get("road_incident"), 0))
+    severity = _num_or_default(stop.get("incident_severity"), 0.0)
+    rate = _num_or_default(stop.get("incident_rate"), 0.0)
     penalty = incident * 4.0 + severity * 14.0 + rate * 3.0
     return penalty, f"incident severity {severity:.2f}" if penalty > 0.05 else None
 
@@ -116,8 +116,8 @@ def _priority_penalty(stop: dict[str, Any]) -> tuple[float, str | None]:
 
 
 def _constraint_penalty(stop: dict[str, Any], prediction: dict[str, Any]) -> tuple[float, str | None]:
-    slack = float(stop.get("time_window_slack_min") or 480.0)
-    expected_delay = float(prediction.get("expected_delay_min") or 0.0)
+    slack = _num_or_default(stop.get("time_window_slack_min"), 480.0)
+    expected_delay = _num_or_default(prediction.get("expected_delay_min"), 0.0)
     will_miss = bool(prediction.get("will_miss_window"))
     penalty = 0.0
     if will_miss:
@@ -125,6 +125,15 @@ def _constraint_penalty(stop: dict[str, Any], prediction: dict[str, Any]) -> tup
     if expected_delay > slack:
         penalty += min(expected_delay - slack, 60.0) * 0.25
     return penalty, "time-window pressure" if penalty > 0.05 else None
+
+
+def _num_or_default(value: Any, default: float) -> float:
+    try:
+        if value is None or value == "":
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def score_leg(
@@ -154,7 +163,7 @@ def score_leg(
     stop = destination_stop or {}
     pred = destination_prediction or {}
 
-    base = max(float(base_travel_min or 0.0), 0.0)
+    base = max(_num_or_default(base_travel_min, 0.0), 0.0)
     road_closed = bool(stop.get("road_closure")) or base >= 9_999.0
     reasons: list[str] = []
 
@@ -176,7 +185,7 @@ def score_leg(
         delay_value = pred.get("delay_p90_min") if use_p90 else pred.get("expected_delay_min")
         if delay_value is None:
             delay_value = pred.get("expected_delay_min", 0.0)
-        predicted_delay = max(float(delay_value or 0.0), 0.0)
+        predicted_delay = max(_num_or_default(delay_value, 0.0), 0.0)
 
         traffic_penalty, reason = _traffic_penalty(stop, base)
         if reason:

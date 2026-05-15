@@ -135,7 +135,7 @@ def _encode_categoricals(row: dict) -> dict:
             )
         row["weather_condition"] = _WEATHER_ENC[key]
 
-    if "vehicle_type" in row:
+    if row.get("vehicle_type") is not None:
         key = row["vehicle_type"]
         if isinstance(key, str):
             key = key.lower()
@@ -148,7 +148,7 @@ def _encode_categoricals(row: dict) -> dict:
         else:
             row["vehicle_type_enc"] = int(key)
 
-    if "road_surface_condition" in row:
+    if row.get("road_surface_condition") is not None:
         key = row["road_surface_condition"]
         if isinstance(key, str):
             key = key.lower()
@@ -167,7 +167,7 @@ def _encode_categoricals(row: dict) -> dict:
 def _fill_defaults(row: dict) -> dict:
     """Fill missing features with dataset medians."""
     filled = dict(_DEFAULTS)
-    filled.update(row)
+    filled.update({k: v for k, v in row.items() if v is not None})
     return filled
 
 

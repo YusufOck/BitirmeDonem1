@@ -332,8 +332,9 @@
 }
 
 .map-frame--large {
-  min-height: 420px;
-  height: 500px;
+  min-height: 480px;
+  height: calc(100vh - 420px);
+  max-height: 680px;
 }
 
 /* ── Route Picker ──────────────────────────────────────────────────────────── */
@@ -522,6 +523,83 @@
   width: 18px;
   height: 18px;
   accent-color: var(--primary-accent);
+}
+
+.segment-control-panel,
+.advanced-network-defaults {
+  grid-column: 1 / -1;
+}
+
+.segment-control-panel {
+  order: -1;
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(37, 99, 235, 0.26);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ffffff, #eef6ff);
+}
+
+.segment-control-panel .section-title-row {
+  align-items: center;
+}
+
+.segment-control-panel .control-btn {
+  min-height: 32px;
+  padding: 0 0.65rem;
+  font-size: 0.76rem;
+}
+
+.field-card--segment,
+.slider-card--segment,
+.toggle-card--segment {
+  border-color: rgba(37, 99, 235, 0.18);
+  background: #ffffff;
+}
+
+.selected-segment-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.65rem 0.75rem;
+  border: 1px dashed rgba(37, 99, 235, 0.35);
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.selected-segment-summary strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.84rem;
+}
+
+.selected-segment-summary span {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.advanced-network-defaults {
+  order: 8;
+  padding: 0.75rem;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 8px;
+  background: #fffbeb;
+}
+
+.advanced-network-defaults summary {
+  color: #92400e;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.advanced-network-defaults[open] {
+  display: grid;
+  gap: 0.6rem;
 }
 
 /* ── Condition Route Cards ─────────────────────────────────────────────────── */
@@ -838,14 +916,15 @@ code {
 
 .responsive-map-metrics {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1.2rem;
   margin-top: 0.5rem;
 }
 
 .responsive-map-metrics > .map-frame {
-  min-height: 420px;
-  height: 480px;
+  min-height: 480px;
+  height: calc(100vh - 360px);
+  max-height: 680px;
 }
 
 .responsive-results-grid {
