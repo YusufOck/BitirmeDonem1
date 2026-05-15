@@ -231,9 +231,10 @@ export default function ScenarioPage() {
     ?? activeScenarioResult?.scenario_metrics?.expected_delay_min
     ?? 0,
   );
+  // Saving = pure delay difference (not route cost — route cost includes road duration + penalties)
+  // This ensures: current - recommended = saving (always consistent math)
   const estimatedSaving = round(
-    activeScenarioResult?.optimization_delta?.route_cost_saved_min
-    ?? activeScenarioResult?.optimization_delta?.operational_delay_saved_min
+    activeScenarioResult?.optimization_delta?.operational_delay_saved_min
     ?? (currentDelayRisk - recommendedDelayRisk),
   );
 
@@ -562,10 +563,10 @@ export default function ScenarioPage() {
                 subvalue="recommended route under same conditions"
               />
               <MetricCard
-                label="Route cost saving"
-                value={estimatedSaving > 0 ? `−${estimatedSaving} min` : estimatedSaving === 0 ? '0 min' : `${estimatedSaving} min`}
+                label="Delay saving"
+                value={estimatedSaving > 0 ? `−${estimatedSaving} min` : estimatedSaving === 0 ? '0 min' : `+${Math.abs(estimatedSaving)} min`}
                 tone={estimatedSaving > 0 ? 'success' : 'warning'}
-                subvalue="current cost − recommended cost"
+                subvalue={`current delay − recommended delay (${currentDelayRisk} − ${recommendedDelayRisk})`}
               />
               <MetricCard
                 label="Change type"

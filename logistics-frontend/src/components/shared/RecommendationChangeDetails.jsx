@@ -44,8 +44,13 @@ function LegRow({ leg, currentCandidate }) {
   return (
     <div className="rcd-leg-row">
       <div className="rcd-leg-header">
-        <span className="rcd-leg-label">{leg.from_stop_id} → {leg.to_stop_id}</span>
-        {pathRank > 1 && <span className="rcd-badge rcd-badge--blue">Alt path #{pathRank}</span>}
+        <span className="rcd-leg-label" style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>
+          {leg.from_stop_id} → {leg.to_stop_id}
+        </span>
+        {pathRank > 1
+          ? <span className="rcd-badge rcd-badge--blue">Alt path #{pathRank} (changed)</span>
+          : <span className="rcd-badge rcd-badge--neutral" style={{ opacity: 0.7 }}>Primary path</span>
+        }
         {timeSaved !== null && timeSaved > 0 && (
           <span className="rcd-badge rcd-badge--green">−{timeSaved} min</span>
         )}
@@ -105,9 +110,9 @@ export default function RecommendationChangeDetails({ scenarioResult }) {
 
   const pathChanged = changeType === 'path_changed' || changeType === 'both_changed';
   const legPaths = selectedCand?.selected_leg_paths || [];
-  // Only show legs where alternative path was chosen (rank > 1) OR penalty > 0
+  // Split legs: changed = alt path chosen OR has penalty; unchanged = primary path, no penalty
   const changedLegs = legPaths.filter((l) => Number(l.path_rank ?? l.rank ?? 1) > 1 || Number(l.segment_penalty_min ?? 0) > 0);
-  const currentCand = null; // current candidate leg comparison — use available data from selected_candidate context
+  const unchangedLegs = legPaths.filter((l) => Number(l.path_rank ?? l.rank ?? 1) === 1 && Number(l.segment_penalty_min ?? 0) === 0);
 
   const validationPassed = validation?.valid !== false;
   const missingStops = validation?.missing_stop_ids || [];
@@ -145,37 +150,47 @@ export default function RecommendationChangeDetails({ scenarioResult }) {
       </div>
 
       {/* ── B) Road Path Changes ── */}
-      {pathChanged && (
+      {(pathChanged || legPaths.length > 0) && (
         <div className="rcd-section">
           <div className="rcd-section-header">
             <span className="rcd-section-title">Road path changes</span>
-            {changedLegs.length > 0
-              ? <span className="rcd-badge rcd-badge--blue">{changedLegs.length} leg{changedLegs.length > 1 ? 's' : ''} changed</span>
-              : <span className="rcd-badge rcd-badge--neutral">No alternative legs</span>}
+            {legPaths.length === 0
+              ? <span className="rcd-badge rcd-badge--neutral">No leg data</span>
+              : changedLegs.length > 0
+                ? <span className="rcd-badge rcd-badge--blue">{changedLegs.length}/{legPaths.length} leg{changedLegs.length > 1 ? 's' : ''} changed</span>
+                : <span className="rcd-badge rcd-badge--neutral">All legs use primary path</span>
+            }
           </div>
+
+          {legPaths.length === 0 && (
+            <div className="rcd-note">
+              Detailed per-leg path metrics unavailable from backend for this candidate.
+            </div>
+          )}
 
           {changedLegs.length === 0 && legPaths.length > 0 && (
             <div className="rcd-note">
-              All legs use primary paths. Cost improvement comes from stop order or condition reduction, not alternative road paths.
+              All {legPaths.length} legs use the primary (shortest) road path.
+              Cost improvement comes from stop order change or reduced condition penalties.
             </div>
           )}
 
-          {changedLegs.length === 0 && legPaths.length === 0 && (
-            <div className="rcd-note">
-              Detailed per-leg geometry metrics unavailable from backend for this candidate.
-            </div>
-          )}
+          {/* Changed legs — show all */}
+          {changedLegs.map((leg, i) => (
+            <LegRow key={`changed-${i}`} leg={leg} />
+          ))}
 
-          {changedLegs.length > 0 && (
+          {/* Unchanged legs — collapsed summary */}
+          {changedLegs.length > 0 && unchangedLegs.length > 0 && (
             <>
-              {(legExpanded ? changedLegs : changedLegs.slice(0, 3)).map((leg, i) => (
-                <LegRow key={i} leg={leg} currentCandidate={currentCand} />
+              {legExpanded && unchangedLegs.map((leg, i) => (
+                <LegRow key={`unchanged-${i}`} leg={leg} />
               ))}
-              {changedLegs.length > 3 && (
-                <button className="rcd-expand-btn" onClick={() => setLegExpanded((v) => !v)}>
-                  {legExpanded ? 'Show less ▲' : `Show ${changedLegs.length - 3} more ▼`}
-                </button>
-              )}
+              <button className="rcd-expand-btn" onClick={() => setLegExpanded((v) => !v)}>
+                {legExpanded
+                  ? `Hide ${unchangedLegs.length} unchanged leg${unchangedLegs.length > 1 ? 's' : ''} ▲`
+                  : `Show ${unchangedLegs.length} unchanged leg${unchangedLegs.length > 1 ? 's' : ''} (primary path) ▼`}
+              </button>
             </>
           )}
         </div>

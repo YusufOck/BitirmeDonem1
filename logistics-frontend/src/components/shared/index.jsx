@@ -312,38 +312,93 @@ export function RouteOrderComparison({ baseline, scenario }) {
   const before = Array.isArray(scenario?.current_order_route) && scenario.current_order_route.length
     ? scenario.current_order_route
     : (baseline || []);
-  // Fix: scenario_route may be an array; do NOT fallback to scenario object
   const after = Array.isArray(scenario?.scenario_route) ? scenario.scenario_route : [];
   const hasResult = after.length > 0;
 
+  const renderStopItem = (stop, index, highlighted) => {
+    const delay = round(
+      stop.operational_delay_min ?? stop.expected_delay_min ?? stop.ml_delay_min ?? 0,
+    );
+    const travel = stop.leg_travel_min ?? stop.planned_travel_min ?? null;
+    const delayColor = delay > 15 ? '#ef4444' : delay > 5 ? '#f59e0b' : '#6b7280';
+    return (
+      <li
+        key={`${highlighted ? 'after' : 'before'}-${stop.stop_id || index}`}
+        style={{
+          fontWeight: highlighted ? '700' : '400',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: '0.5rem',
+          padding: '0.25rem 0',
+          borderBottom: '1px solid rgba(0,0,0,0.04)',
+        }}
+      >
+        <span>
+          <span style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: '#94a3b8', marginRight: '0.4rem' }}>{index + 1}.</span>
+          {stop.stop_name || stop.stop_id || `Stop ${index + 1}`}
+        </span>
+        <span style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexShrink: 0 }}>
+          {travel !== null && (
+            <span style={{ fontSize: '0.72rem', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
+              {round(travel, 1)} min travel
+            </span>
+          )}
+          <span style={{
+            fontSize: '0.75rem', fontWeight: 700, color: delayColor,
+            background: delay > 5 ? (delay > 15 ? '#fee2e2' : '#fef3c7') : '#f0fdf4',
+            borderRadius: '4px', padding: '0.1rem 0.35rem',
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {delay} min delay
+          </span>
+        </span>
+      </li>
+    );
+  };
+
   return (
     <div className="order-comparison">
+      {/* ── Left: Original / Before ── */}
       <div style={{ backgroundColor: '#f9fafb', padding: '1rem', borderRadius: '8px' }}>
         <span className="panel-kicker">Before optimization</span>
-        <h3 style={{ marginBottom: '0.5rem' }}>Original order ({before.length} stops)</h3>
-        <ol style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-          {before.map((stop, index) => (
-            <li key={`baseline-${stop.stop_id || index}`}>
-              {stop.stop_name || stop.stop_id || `Stop ${index + 1}`}
-            </li>
-          ))}
+        <h3 style={{ marginBottom: '0.75rem' }}>Original order ({before.length} stops)</h3>
+        <ol style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0' }}>
+          {before.map((stop, index) => renderStopItem(stop, index, false))}
         </ol>
       </div>
+
+      {/* ── Right: Optimized / After ── */}
       <div style={{ backgroundColor: '#eff6ff', padding: '1rem', borderRadius: '8px', border: '1px solid #bfdbfe' }}>
         <span className="panel-kicker">After optimization</span>
-        <h3 style={{ marginBottom: '0.5rem', color: hasResult ? '#1e40af' : '#6b7280' }}>
-          {hasResult ? `Optimized order (${after.length} stops)` : 'No result yet'}
+        <h3 style={{ marginBottom: '0.75rem', color: hasResult ? '#1e40af' : '#6b7280' }}>
+          {hasResult ? `Optimized order (${after.length} stops)` : 'Not optimized yet'}
         </h3>
-        {hasResult && before.length !== after.length && (
-          <RouteValidationBanner plannedStops={before} resultStops={after} label="Optimized" />
+
+        {!hasResult && (
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            justifyContent: 'center', gap: '0.5rem',
+            padding: '2rem 1rem', color: '#94a3b8', textAlign: 'center',
+          }}>
+            <svg width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p style={{ margin: 0, fontSize: '0.88rem', fontWeight: 600 }}>Run optimization to see the recommended stop order here.</p>
+            <p style={{ margin: 0, fontSize: '0.78rem' }}>Click "Run Pre-dispatch Optimization" above.</p>
+          </div>
         )}
-        <ol style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-          {(hasResult ? after : before).map((stop, index) => (
-            <li key={`after-${stop.stop_id || index}`} style={{ fontWeight: hasResult ? '600' : '400' }}>
-              {stop.stop_name || stop.stop_id || `Stop ${index + 1}`}
-            </li>
-          ))}
-        </ol>
+
+        {hasResult && (
+          <>
+            {before.length !== after.length && (
+              <RouteValidationBanner plannedStops={before} resultStops={after} label="Optimized" />
+            )}
+            <ol style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0' }}>
+              {after.map((stop, index) => renderStopItem(stop, index, true))}
+            </ol>
+          </>
+        )}
       </div>
     </div>
   );

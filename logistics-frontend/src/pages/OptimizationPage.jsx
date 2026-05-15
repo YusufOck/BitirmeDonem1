@@ -178,14 +178,36 @@ export default function OptimizationPage() {
             <RouteOrderComparison baseline={baselineStops} scenario={activeScenarioResult} />
           </section>
 
-          {/* Stop details table */}
-          {(hasOptimizationResult ? optimizedStops : plannedStops).length > 0 && (
+          {/* Stop details table — always show planned; show optimized alongside when result exists */}
+          {hasOptimizationResult ? (
             <section className="page-card page-card--wide">
               <span className="panel-kicker">Stop details</span>
-              <h2>{hasOptimizationResult ? 'Optimized stop sequence' : 'Planned stop sequence'}</h2>
-              <StopsTable stops={hasOptimizationResult ? optimizedStops : plannedStops} compact />
+              <h2 style={{ marginBottom: '1rem' }}>Original vs Optimized stop sequence</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', alignItems: 'start' }}>
+                <div>
+                  <div style={{ marginBottom: '0.5rem', padding: '0.35rem 0.6rem', background: '#f3f4f6', borderRadius: '6px', fontSize: '0.78rem', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    📋 Planned order ({baselineStops.length} stops)
+                  </div>
+                  <StopsTable stops={baselineStops} compact />
+                </div>
+                <div>
+                  <div style={{ marginBottom: '0.5rem', padding: '0.35rem 0.6rem', background: '#dbeafe', borderRadius: '6px', fontSize: '0.78rem', fontWeight: 700, color: '#1e40af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    ✅ Optimized order ({optimizedStops.length} stops)
+                  </div>
+                  <StopsTable stops={optimizedStops} compact />
+                </div>
+              </div>
             </section>
+          ) : (
+            plannedStops.length > 0 && (
+              <section className="page-card page-card--wide">
+                <span className="panel-kicker">Stop details</span>
+                <h2>Planned stop sequence</h2>
+                <StopsTable stops={plannedStops} compact />
+              </section>
+            )
           )}
+
         </div>
       </div>
     </div>
