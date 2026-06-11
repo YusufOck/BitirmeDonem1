@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["simulation"])
 
-UPDATE_INTERVAL_S = 2.0
-DEFAULT_DWELL_S = 30.0
+UPDATE_INTERVAL_S = float(os.getenv("SIM_UPDATE_INTERVAL_S", "1.0"))
+DEFAULT_DWELL_S = float(os.getenv("SIM_DWELL_SECONDS", "1.0"))
 
 # Configurable stop detection radius.
 # Default 0.20 km (200 m) — appropriate for Sivas demo data where road
@@ -97,6 +97,21 @@ def _order_stops_by_route_progress(coords: list, cum: list[float], stops: list) 
         next_stop["route_progress_km"] = progress_km if math.isfinite(progress_km) else None
         ordered.append((progress_km, index, next_stop))
     return [stop for _, _, stop in sorted(ordered, key=lambda item: (item[0], item[1]))]
+
+
+def _route_progress_for_stop(route: dict, stop: dict) -> float | None:
+    progress = stop.get("route_progress_km")
+    try:
+        progress = float(progress)
+    except (TypeError, ValueError):
+        progress = None
+    if progress is not None and math.isfinite(progress):
+        return progress
+
+    stop_lat, stop_lon = _stop_lat_lon(stop)
+    if stop_lat is None or stop_lon is None:
+        return None
+    return _find_stop_dist_on_route(route["coords"], route["cum"], stop_lat, stop_lon)
 
 
 def _interpolate(coords: list, cum: list[float], target_km: float) -> tuple[float, float, float]:
@@ -268,10 +283,8 @@ async def simulation_ws(ws: WebSocket):
                         stop_id = str(stop.get("stop_id") or stop.get("id") or "")
                         if not stop_id or stop_id in route["visited_stops"]:
                             continue
-                        target_dist = _find_stop_dist_on_route(
-                            route["coords"], route["cum"], stop["lat"], stop["lon"]
-                        )
-                        if target_dist <= route["dist_km"]:
+                        target_dist = _route_progress_for_stop(route, stop)
+                        if target_dist is None or target_dist <= route["dist_km"]:
                             continue
                         gap = target_dist - route["dist_km"]
                         if gap < best_gap:
@@ -340,7 +353,8 @@ async def simulation_ws(ws: WebSocket):
                         })
                         continue
 
-                    route["dist_km"] = min(route["dist_km"] + step_km, route["total_km"])
+                    previous_dist_km = route["dist_km"]
+                    route["dist_km"] = min(previous_dist_km + step_km, route["total_km"])
                     lon, lat, heading = _interpolate(route["coords"], route["cum"], route["dist_km"])
 
                     # --- Ordered stop completion: only check the NEXT expected stop ---
@@ -353,11 +367,27 @@ async def simulation_ws(ws: WebSocket):
                         if stop_id is not None and stop_lat is not None and stop_lon is not None:
                             stop_id = str(stop_id)
                             dist = _haversine_km(lat, lon, float(stop_lat), float(stop_lon))
-                            logger.debug(
-                                "[SIM] %s next_stop=%s dist=%.4f km radius=%.3f km",
-                                cid, stop_id, dist, STOP_RADIUS_KM,
+                            target_dist = _route_progress_for_stop(route, stop)
+                            reached_by_progress = (
+                                target_dist is not None
+                                and target_dist <= route["dist_km"] + 1e-9
                             )
-                            if dist < STOP_RADIUS_KM:
+                            logger.debug(
+                                "[SIM] %s next_stop=%s dist=%.4f km radius=%.3f km progress=%s",
+                                cid, stop_id, dist, STOP_RADIUS_KM, target_dist,
+                            )
+                            if reached_by_progress or dist < STOP_RADIUS_KM:
+                                if (
+                                    reached_by_progress
+                                    and target_dist is not None
+                                    and previous_dist_km <= target_dist <= route["total_km"]
+                                ):
+                                    route["dist_km"] = target_dist
+                                    lon, lat, heading = _interpolate(
+                                        route["coords"],
+                                        route["cum"],
+                                        route["dist_km"],
+                                    )
                                 route["visited_stops"].add(stop_id)
                                 route["next_stop_index"] = nsi + 1
                                 route["dwell_remaining_s"] = float(
